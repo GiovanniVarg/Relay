@@ -309,23 +309,22 @@ export class ClaudeAdapter implements ProviderAdapter {
       this.active.add(job);
       job.child.stdin.end();
       const exit = await job.finished;
-      if (!status || exit.code !== 0) return { ...base, error: 'Claude subscription status could not be verified. Run claude auth login.' };
+      if (!status || exit.code !== 0) return { ...base, error: 'Claude sign-in is not verified yet. Sign in from Connections, then refresh this account.' };
       const auth = claudeAuth(status);
       return { ...base, ...auth, ...(!auth.authenticated ? { error: 'Claude account subscription login is required; API credentials are not accepted.' } : {}) };
     } catch (error) { return { ...base, error: safeError(error) }; }
     finally { if (job) { this.active.delete(job); await job.stop(); } }
   }
   async login() {
-    if(!this.options.isolatedProfile)return { command: 'claude auth login', message: 'Run claude auth login in your terminal and sign in with your Claude subscription. Then refresh connections. Relay never receives your credentials.' };
     if(this.active.size||this.loginChild)throw new Error('Wait for this Claude account’s active operations before signing in');
     const command=await this.command();if(!command)throw new Error('Install the official Claude Code CLI before connecting this account');
-    const cwd=await ensureWorkspace(this.dataDir,this.id),env=this.environment();await mkdir(env.CLAUDE_CONFIG_DIR!,{recursive:true});
+    const cwd=await ensureWorkspace(this.dataDir,this.id),env=this.environment();if(this.options.isolatedProfile)await mkdir(env.CLAUDE_CONFIG_DIR!,{recursive:true});
     const child=(this.options.launcher??launch)(command,['auth','login'],cwd,env);this.loginChild=child;
     const stop=()=>void (this.options.kill??killOwned)(child).catch(()=>{});const timer=setTimeout(stop,300000);timer.unref();
     let bytes=0;const drain=(chunk:Buffer)=>{bytes+=chunk.length;if(bytes>256*1024)stop();};child.stdout.on('data',drain);child.stderr.on('data',drain);child.stdin.on('error',()=>{});child.stdin.end();
     const clear=()=>{clearTimeout(timer);if(this.loginChild===child)this.loginChild=undefined;};child.once('close',clear);child.once('error',clear);
     await new Promise<void>((done,reject)=>{child.once('spawn',()=>done());child.once('error',()=>reject(new Error('Official Claude sign-in could not start')));if(child.pid)done();});
-    return {message:'Official Claude sign-in started for this isolated profile. Complete the browser sign-in, then refresh this account. On macOS, profile credential isolation must still be verified; the inspected identity is checked before every dispatch.'};
+    return {message:this.options.isolatedProfile?'Official Claude sign-in started for this isolated profile. Complete the browser sign-in, then refresh this account. On macOS, profile credential isolation must still be verified; the inspected identity is checked before every dispatch.':'Official Claude sign-in started. Complete the browser sign-in, then refresh this account. Your existing default Claude profile stays in use; Relay never receives your credentials.'};
   }
   async stream(request: ProviderRequest, emit: (event: ProviderEvent) => void, signal: AbortSignal): Promise<ProviderResult> {
     if (request.mode === 'agent') return this.streamNative(request, emit, signal);

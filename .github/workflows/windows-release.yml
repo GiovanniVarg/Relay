@@ -1,0 +1,147 @@
+name: Windows beta installer
+
+on:
+  push:
+    tags: ['v*-beta']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'GiovanniVarg/Relay'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the reviewed release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # Official v4 ref verified before pinning
+        with:
+          persist-credentials: false
+      - name: Set up the pinned build Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.5'
+          check-latest: false
+      - name: Validate release identity
+        env:
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.name -cne 'relay-agent-harness' -or $package.version -notmatch '^\d+\.\d+\.\d+$' -or $env:RELAY_RELEASE_TAG -cne ('v' + $package.version + '-beta')) { throw 'Tag and Relay package version must match exactly.' }
+          $remote = (git remote get-url origin).Trim().TrimEnd('/') -replace '\.git$', ''
+          if ($remote -cne 'https://github.com/GiovanniVarg/Relay') { throw 'Release must build the official public repository.' }
+          if ((git rev-parse HEAD).Trim() -cne $env:RELAY_RELEASE_SHA) { throw 'Checkout does not match the tagged release commit.' }
+          git diff --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Release checkout is modified.' }
+      - name: Install locked build dependencies without lifecycle scripts
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed.' }
+      - name: Check the actual release version before the full suite
+        run: |
+          node --import tsx --test tests/version-consistency.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Release version preflight failed.' }
+          npm run check
+          if ($LASTEXITCODE -ne 0) { throw 'Type checking failed.' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+      - name: Run every normal test serially
+        run: |
+          $env:RELAY_TEST_PRIVATE_NODE = (Get-Command node.exe).Source
+          $tests = @(Get-ChildItem tests -File -Filter '*.test.ts' | Sort-Object Name | ForEach-Object { Join-Path 'tests' $_.Name })
+          if ($tests.Count -eq 0) { throw 'Release has no tests.' }
+          node node_modules/tsx/dist/cli.mjs --test --test-concurrency=1 @tests
+          if ($LASTEXITCODE -ne 0) { throw 'The normal test suite failed.' }
+      - name: Build the clean online installer
+        run: |
+          & scripts/installer/build-windows.ps1 -SourceRoot $env:GITHUB_WORKSPACE -OutputDirectory (Join-Path $env:RUNNER_TEMP 'relay-release')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $names = @(('Relay-Setup-' + $version + '-beta-windows-x64.exe'), 'SHA256SUMS.txt', 'components.json', 'THIRD_PARTY_NOTICES.txt')
+          $files = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'relay-release') -File)
+          if ($files.Count -ne 4 -or @($files | Where-Object { $_.Name -notin $names }).Count) { throw 'Only installer, checksum, components and notices may be uploaded.' }
+      - name: Retain only the checked release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-beta-installer
+          path: |
+            ${{ runner.temp }}/relay-release/Relay-Setup-*-beta-windows-x64.exe
+            ${{ runner.temp }}/relay-release/SHA256SUMS.txt
+            ${{ runner.temp }}/relay-release/components.json
+            ${{ runner.temp }}/relay-release/THIRD_PARTY_NOTICES.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.repository == 'GiovanniVarg/Relay'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download only this run's checked installer assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-beta-installer
+          path: release
+      - name: Verify every file before publishing a beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELAY_RELEASE_TAG -notmatch '^v(\d+\.\d+\.\d+)-beta$') { throw 'Invalid release tag.' }
+          $version = $Matches[1]
+          $exe = 'Relay-Setup-' + $version + '-beta-windows-x64.exe'
+          $payloadNames = @($exe, 'components.json', 'THIRD_PARTY_NOTICES.txt')
+          $names = @($payloadNames) + @('SHA256SUMS.txt')
+          $files = @(Get-ChildItem release -File)
+          if ($files.Count -ne 4 -or @($files | Where-Object { $_.Name -notin $names }).Count) { throw 'Downloaded release assets do not match the tag.' }
+          $seen = @{}
+          foreach ($line in (Get-Content -LiteralPath release/SHA256SUMS.txt)) {
+            if ($line -notmatch '^([a-f0-9]{64})[ \t]+\*?([^\r\n]+)$') { throw 'Malformed checksum entry.' }
+            $hash = $Matches[1]; $name = $Matches[2]
+            if ($name -notin $payloadNames -or $seen.ContainsKey($name)) { throw 'Unexpected or duplicate checksum entry.' }
+            if ((Get-FileHash -LiteralPath (Join-Path release $name) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw 'Release checksum verification failed.' }
+            $seen[$name] = $true
+          }
+          if ($seen.Count -ne 3) { throw 'Incomplete release checksums.' }
+          $components = Get-Content -LiteralPath release/components.json -Raw | ConvertFrom-Json
+          if ($components.release -cne $version -or $components.sourceRepository -cne 'https://github.com/GiovanniVarg/Relay' -or $components.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $components.status -cne 'beta-testing' -or $components.credentialsIncluded -isnot [bool] -or $components.credentialsIncluded -ne $false) { throw 'Release component identity does not match.' }
+          $notes = @(
+            'Download the Windows x64 setup EXE below and open it. Internet is required for first installation.',
+            '',
+            'Setup downloads verified Node and locked official packages automatically. No terminal commands or system Node installation are needed. Sign in with your own subscriptions inside Relay; no signed-in accounts, chats or API keys are included.',
+            '',
+            'This beta may show normal Windows publisher/reputation warnings. It does not bypass OS protections. macOS desktop installation is not included in this Windows release.',
+            '',
+            ('Source: https://github.com/' + $env:GH_REPO + '/tree/' + $env:RELAY_RELEASE_TAG)
+          ) -join [Environment]::NewLine
+          $notesPath = Join-Path $env:RUNNER_TEMP 'relay-release-notes.md'
+          [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
+          $assets = @($names | ForEach-Object { Join-Path release $_ })
+          gh release create $env:RELAY_RELEASE_TAG @assets --verify-tag --draft --prerelease --latest=false --title ('Relay ' + $version + ' beta - Windows installer') --notes-file $notesPath --repo $env:GH_REPO
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation/upload did not finish. Inspect the existing draft; do not overwrite or replay blindly.' }
+          $releaseId = gh release view $env:RELAY_RELEASE_TAG --repo $env:GH_REPO --json databaseId --jq .databaseId
+          if ($LASTEXITCODE -ne 0 -or [string]$releaseId -notmatch '^[1-9][0-9]*$') { throw 'Could not identify the draft release; inspect it before retrying.' }
+          $published = gh api ('repos/' + $env:GH_REPO + '/releases/' + $releaseId) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $published.tag_name -cne $env:RELAY_RELEASE_TAG -or -not $published.draft -or -not $published.prerelease -or @($published.assets).Count -ne 4 -or @($published.assets | Where-Object { $_.name -notin $names -or $_.state -ne 'uploaded' }).Count) { throw 'Draft release verification failed; it remains unpublished.' }
+          foreach ($asset in $published.assets) { $digest = (Get-FileHash -LiteralPath (Join-Path release $asset.name) -Algorithm SHA256).Hash.ToLowerInvariant(); if ($asset.digest -cne ('sha256:' + $digest)) { throw 'Uploaded release bytes do not match the checked local asset; the draft remains unpublished.' } }
+          gh release edit $env:RELAY_RELEASE_TAG --draft=false --prerelease --latest=false --repo $env:GH_REPO
+          if ($LASTEXITCODE -ne 0) { throw 'Publication outcome needs inspection; do not replay blindly.' }

@@ -10,12 +10,16 @@ if(-not $LocalInstall -and $appRoot -ine $preferredRoot -and (Test-Path -Literal
 }
 if($Port -lt 1 -or $Port -gt 65535){throw 'Port must be between 1 and 65535.'}
 $dataRoot=[IO.Path]::GetFullPath($(if($env:RELAY_DATA_DIR){$env:RELAY_DATA_DIR}else{Join-Path ([Environment]::GetFolderPath('UserProfile')) '.relay-data'}))
-$baseUrl="http://127.0.0.1:$Port";$nodePath=(Get-Command node.exe -ErrorAction Stop).Source
+$baseUrl="http://127.0.0.1:$Port"
 $serverPath=Join-Path $appRoot 'dist\server\index.js';$servePath=Join-Path $appRoot 'scripts\serve-relay.ps1'
 if(-not(Test-Path -LiteralPath $serverPath) -or -not(Test-Path -LiteralPath $servePath)){throw 'Build Relay first: run Setup Relay.cmd.'}
 function Read-ControlText([string]$path){$stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete));try{$reader=New-Object IO.StreamReader($stream,[Text.Encoding]::UTF8,$true);try{return $reader.ReadToEnd()}finally{$reader.Dispose()}}finally{$stream.Dispose()}}
 function No-Links([string]$path){$current=[IO.Path]::GetFullPath($path);while($current){if(Test-Path -LiteralPath $current){if(((Get-Item -Force -LiteralPath $current).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Launcher refuses linked control paths'}};$parent=[IO.Path]::GetDirectoryName($current);if($parent -eq $current){break};$current=$parent}}
 No-Links $appRoot;No-Links $dataRoot;$listenerHelper=Join-Path $appRoot 'scripts\windows-tcp-listeners.ps1';No-Links $listenerHelper;if((Get-Item -LiteralPath $listenerHelper).LinkType -eq 'HardLink'){throw 'Linked native listener helper'};. $listenerHelper;New-Item -ItemType Directory -Force -Path $dataRoot|Out-Null
+$runtimeHelper=Join-Path $appRoot 'scripts\private-runtime.ps1';$privateRuntime=$null
+if(Test-Path -LiteralPath $runtimeHelper){No-Links $runtimeHelper;if((Get-Item -LiteralPath $runtimeHelper).LinkType -eq 'HardLink'){throw 'Linked private runtime helper'};. $runtimeHelper;$privateRuntime=Get-RelayPrivateRuntime -AppRoot $appRoot}
+elseif(Test-Path -LiteralPath (Join-Path $appRoot '.runtime')){throw 'Relay private runtime verification is unavailable. Repair Relay using its official installer.'}
+if($privateRuntime){$nodePath=$privateRuntime.NodePath;$env:PATH=$privateRuntime.Path}else{$nodePath=(Get-Command node.exe -ErrorAction Stop).Source}
 function Command-TokenPattern([string]$value){
  $escaped=[regex]::Escape($value)
  if($value -match '\s'){return ('"'+$escaped+'"')}
@@ -88,6 +92,11 @@ if($owned -and $hasHost){$state=Read-State;if($state -and (Native-Host $state) -
 if(-not $owned -and @(Get-RelayTcpListeners -Port $Port).Count){throw "Port $Port is in use. No process was stopped."}
 if(-not $hasHost){
  $environment=@{};foreach($name in @('USERPROFILE','HOME','APPDATA','LOCALAPPDATA','TEMP','TMP','HOMEDRIVE','HOMEPATH')){$value=[Environment]::GetEnvironmentVariable($name,'Process');if($null -ne $value){$environment[$name]=$value}}
+ if($env:PLAYWRIGHT_BROWSERS_PATH){
+  $profileRoot=[IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile')).TrimEnd('\','/');$browserRoot=[IO.Path]::GetFullPath($env:PLAYWRIGHT_BROWSERS_PATH)
+  if(-not [IO.Path]::IsPathRooted($env:PLAYWRIGHT_BROWSERS_PATH) -or -not $browserRoot.StartsWith($profileRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'The Relay browser cache must be an absolute folder inside this Windows user profile.'}
+  No-Links $browserRoot;$environment['PLAYWRIGHT_BROWSERS_PATH']=$browserRoot
+ }
  $configurationValue=@{appRoot=$appRoot;dataRoot=$dataRoot;nodePath=$nodePath;port=$Port;path=$env:PATH;environment=$environment}
  if($Recover){$configurationValue.recovery=@{receiptPath=$RecoveryReceipt;receiptSha256=$RecoveryReceiptSha256}}
  if($owned){$configurationValue.adopt=@{pid=$owned.health.pid;startedAt=$owned.startedAt;instanceId=$owned.health.instanceId}}

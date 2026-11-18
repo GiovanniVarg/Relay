@@ -1,16 +1,29 @@
 # Relay
 
-> **Beta / testing — 0.10.1.** This is an early public source snapshot, not a claim of production readiness. Windows/Chrome controller pairing has been tested. Physical iPhone installation and close/reopen behavior still need device verification; native macOS/Linux behavior and provider entitlements have separate limits.
+> **Beta / testing — 0.11.0.** Windows x64 gets a graphical installer and guided device pairing. Physical iPhone verification remains a device check; macOS packaging follows separately.
 
 A local, conversational workspace for multiple agents and your ChatGPT, Claude, Cursor and OpenCode connections. Keep conversations, job activity, bot browsers and terminals together. Simple mode centers the conversation; Advanced exposes routing, accounts and execution settings.
 
 Project: [GiovanniVarg/Relay](https://github.com/GiovanniVarg/Relay). Feedback and reproducible bug reports are welcome. Do not put API keys, pairing codes, private connection profiles or unredacted logs in public issues.
 
-## Run on Windows
+## Install on Windows
 
-Requires Node.js 22.13+ and npm. Install the official Codex and Claude Code CLIs for the providers you use. Native Codex Work/Agent execution on Windows requires Codex 0.162.0+ and the MXC sandbox. Cursor's official SDK is an application dependency; OpenCode requires its supported installed CLI and provider configuration.
+[**Download Relay for Windows**](https://github.com/GiovanniVarg/Relay/releases/download/v0.11.0-beta/Relay-Setup-0.11.0-beta-windows-x64.exe)
 
-For a source checkout:
+1. Open **Relay Setup** and click **Install Relay**.
+2. Setup prepares the required components automatically. There are no terminal commands or separate Node installation steps.
+3. Open Relay and connect your accounts through their official browser sign-in.
+
+The Windows x64 beta needs an internet connection for its first install and at least **5 GB free**. It installs for your Windows account, adds a Relay shortcut, and keeps your chats and account data separate. Start at sign-in is optional. Existing ready installations are preserved and opened.
+
+Relay is an unsigned beta, so Windows may show a publisher warning or block it according to your device policy. Trusted publisher signing is planned. macOS packaging follows the Windows release.
+
+See [installation, included components and uninstalling](docs/install.md). Your provider's own account terms and supported OS capabilities still apply.
+
+<details>
+<summary>For contributors: run from source</summary>
+
+Requires Node.js 22.13+ and npm. Install the official provider tools you plan to use; the graphical installer handles those downloads for ordinary users.
 
 ```sh
 npm ci
@@ -19,9 +32,9 @@ npm run build
 npm start
 ```
 
-Open [Relay on localhost](http://127.0.0.1:3210/). Foreground `npm start` stops with Ctrl+C. On Windows, **Setup Relay.cmd** prepares the per-user installation; **Start Relay.cmd** uses the independent Windows supervisor. Installed application and data paths use the detected user's home: `%USERPROFILE%/Relay` and `%USERPROFILE%/.relay-data`. `RELAY_DATA_DIR` can explicitly override the data directory.
+Open [Relay on localhost](http://127.0.0.1:3210/). Foreground `npm start` stops with Ctrl+C. `Start Relay.cmd` uses the Windows supervisor. Installed application and data paths use the detected user's home: `%USERPROFILE%/Relay` and `%USERPROFILE%/.relay-data`. `RELAY_DATA_DIR` can explicitly override the data directory.
 
-The supervisor restarts an unexpectedly exited owned server with bounded backoff and follows verified trusted updates. It does not install an automatic Windows login trigger. Native dependencies, browser installation and OS permissions may require their own supported setup; unavailable capabilities report their limitation.
+</details>
 
 ## Connect subscriptions and models
 
@@ -43,7 +56,7 @@ Type `@` and choose bots or paired computers to assign explicit background work.
 
 Keep the device and hosting computer on the same LAN. Open the **phone icon beside Settings**, enable local connections on the selected private interface, and wait for the QR transport to become ready. Scan a fresh QR. Supported browsers use the pinned encrypted connection without installing a root certificate. Safari needs its WebTransport certificate-hash support; allow ordinary Local Network access if requested.
 
-For an iPhone Home Screen app, choose **Set up Home Screen app** in Safari, then **Copy public connection profile**. Use **Share → Add to Home Screen** and open the new icon. Paste into **Copied connection profile**, choose **Use copied connection profile**, then **Check connection**. Enter a new one-time sync code from the host and select **Connect securely**.
+For an iPhone Home Screen app, choose **Set up Home Screen app** in Safari, then **Copy setup details**. Use **Share → Add to Home Screen** and open the new Relay icon. Inside that app, paste into **Copied connection profile**, choose **Use copied connection profile**, then **Check connection**. Enter a fresh one-time **Sync code** from Relay on the hosting computer and choose **Connect securely**. Optional names and automatic reconnect are under **Connection details**. To stay in Safari instead, choose **Continue in Safari** and pair there.
 
 Pair in the app you intend to reopen. Safari tabs and installed apps do not share IndexedDB pairing keys. Leave automatic reconnect enabled; normal reopening uses the saved key instead of requiring another code. The browser controls persistent-storage and Local Network permissions. Deleting app/website data, revocation, changing storage context or host identity/address, or expiration of the saved trust horizon can require recovery. The host must remain awake and reachable. Physical iPhone installation and close/reopen behavior are not yet verified. See [QR pairing and persistence](docs/qr-pairing.md).
 
@@ -69,4 +82,4 @@ LAN access retains signed exact request bytes, nonce/timestamp replay checks, ro
 
 `npm run check` typechecks, `npm test` runs the normal suite, and `npm run build` builds server and client. Live browser, native-runtime and subscription tests are explicit opt-ins; normal tests do not establish live account access. Review test output and intentional skips for your platform. No credentials or real user data are required in public bug reports.
 
-This snapshot includes application source, tests, scripts and current user guides. Developer-machine histories, private data, local verification receipts and archived design/delivery reports are excluded. A project license has not been selected yet; no license file is included in this beta snapshot.
+This snapshot includes application source, tests, scripts and current user guides. Developer-machine histories, private data, local verification receipts and archived design/delivery reports are excluded. Relay source is licensed under the [MIT License](LICENSE). Downloaded third-party components retain their own licenses.

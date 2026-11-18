@@ -1,13 +1,13 @@
 .relay-controller-shell { min-height: 100dvh; display: grid; place-items: center; padding: max(28px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 12% 5%, var(--radiance-teal, #7db9aa25), transparent 45%), radial-gradient(ellipse at 90% 90%, var(--radiance-amber, #eac18e2b), transparent 45%), var(--canvas, #f7f5ef); color: var(--text, #252d29); font-family: var(--font-ui, system-ui, sans-serif); }
-.relay-controller-card { width: min(100%, 464px); min-width: 0; box-sizing: border-box; background: var(--surface, #fffdf8); border: 1px solid var(--line-soft, #d4d8ce); border-radius: 16px; padding: clamp(20px, 5vw, 32px); box-shadow: 0 16px 64px var(--shadow, #252d291a); }
+.relay-controller-card { width: min(100%, 464px); min-width: 0; box-sizing: border-box; background: var(--surface, #fffdf8); background: color-mix(in srgb, var(--surface, #fffdf8) 96%, transparent); backdrop-filter: blur(14px); border: 1px solid var(--line-soft, #d4d8ce); border-radius: 22px; padding: clamp(22px, 5vw, 32px); box-shadow: 0 16px 64px var(--shadow, #252d291a); }
 .relay-controller-header, .relay-controller-brand, .relay-controller-eyebrow, .relay-controller-host-address, .relay-controller-topbar, .relay-controller-footer { display: flex; align-items: center; gap: 10px; }
-.relay-controller-header { justify-content: space-between; margin-bottom: 32px; }
+.relay-controller-header { justify-content: space-between; margin-bottom: 26px; }
 .relay-controller-brand { font-weight: 650; font-size: 17px; letter-spacing: -.03em; }
-.relay-controller-card h1 { margin: 12px 0; font-size: clamp(25px, 6vw, 30px); line-height: 1.2; letter-spacing: -.04em; overflow-wrap: anywhere; }
+.relay-controller-card h1 { margin: 12px 0; font-size: clamp(26px, 6vw, 31px); line-height: 1.18; letter-spacing: -.04em; overflow-wrap: anywhere; text-wrap: balance; }
 .relay-controller-card h2 { font-size: 16px; letter-spacing: -.02em; margin: 0 0 8px; }
 .relay-controller-card p, .relay-controller-card small { color: var(--muted, #515b53); line-height: 1.6; font-size: 14px; }
 .relay-controller-card p { margin: 10px 0 20px; }
-.relay-controller-card small { font-size: 12px; }
+.relay-controller-card small { font-size: 13px; }
 .relay-controller-eyebrow { color: var(--mint, #236c61); font-size: 12px; font-weight: 600; }
 .relay-controller-host-address { min-height: 52px; padding: 12px; margin: 22px 0; border: 1px solid var(--line-soft, #d4d8ce); border-radius: 9px; background: var(--canvas, #f7f5ef); font-size: 13px; }
 .relay-controller-host-address span { flex: 1; overflow-wrap: anywhere; min-width: 0; }
@@ -20,7 +20,7 @@
 .relay-controller-card input:focus-visible, .relay-controller-card textarea:focus-visible, .relay-controller-card select:focus-visible, .relay-controller-card button:focus-visible, .relay-controller-card a:focus-visible, .relay-controller-card summary:focus-visible, .relay-controller-topbar button:focus-visible, .relay-controller-banner button:focus-visible { outline: 2px solid var(--mint, #236c61); outline-offset: 3px; }
 .relay-controller-card button, .relay-controller-banner button, .relay-controller-topbar button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 13px; border: 1px solid var(--line, #878b80); border-radius: 8px; background: var(--surface, #fffdf8); color: var(--text, #252d29); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .relay-controller-card button:hover:not(:disabled), .relay-controller-banner button:hover:not(:disabled), .relay-controller-topbar button:hover:not(:disabled) { background: var(--hover, #e3e7df); }
-.relay-controller-card button.relay-controller-primary { width: 100%; background: var(--mint, #236c61); color: var(--on-mint, #fff); border-color: transparent; justify-content: space-between; padding-inline: 16px; }
+.relay-controller-card button.relay-controller-primary { width: 100%; min-height: 48px; background: var(--mint, #236c61); color: var(--on-mint, #fff); border-color: transparent; justify-content: space-between; padding-inline: 16px; }
 .relay-controller-card button.relay-controller-primary:hover:not(:disabled) { background: var(--mint-hover, #19594f); }
 .relay-controller-card button:disabled { opacity: .55; cursor: wait; }
 .relay-controller-card .relay-controller-error { margin: 20px 0; padding: 14px; color: var(--danger, #9e3f32); background: var(--danger-surface, #f9e9e1); border: 1px solid var(--danger-line, #b06452); border-radius: 9px; overflow-wrap: anywhere; font-size: 14px; }
@@ -32,7 +32,7 @@
 .relay-controller-trust { padding: 18px; border-radius: 9px; background: var(--raised, #eeeee7); border: 1px solid var(--line-soft, #d4d8ce); }
 .relay-controller-trust > button { width: 100%; }
 .relay-controller-trust a { display: inline-flex; align-items: center; min-height: 44px; color: var(--mint, #236c61); text-decoration: underline; text-underline-offset: 3px; font-size: 13px; }
-.relay-controller-footer { flex-wrap: wrap; border-top: 1px solid var(--line-soft, #d4d8ce); margin-top: 24px; padding-top: 14px; color: var(--muted, #515b53); font-size: 11px; gap: 6px; }
+.relay-controller-footer { flex-wrap: wrap; border-top: 1px solid var(--line-soft, #d4d8ce); margin-top: 26px; padding-top: 14px; color: var(--muted, #515b53); font-size: 12px; gap: 6px; }
 .relay-controller-footer span { flex: 1; }
 .relay-controller-card .relay-controller-footer button { background: transparent; border: 0; padding-inline: 5px; font-weight: 500; font-size: 12px; }
 .relay-controller-card .relay-controller-theme { margin: 0; }
@@ -59,3 +59,28 @@
 @media (prefers-reduced-motion: reduce) { .relay-controller-card * { transition: none; scroll-behavior: auto; } }
 
 .relay-controller-banner-message{display:grid;gap:3px;min-width:0}.relay-controller-banner-message small{font-size:12px;color:var(--muted)}
+.relay-controller-hero { display: grid; place-items: center; width: 60px; height: 60px; margin-bottom: 20px; border: 1px solid var(--line-soft); border-radius: 18px; color: var(--mint); background: color-mix(in srgb, var(--mint) 7%, var(--surface)); }
+.relay-controller-card .relay-controller-secondary { width: 100%; margin-top: 10px; background: transparent; }
+.relay-controller-start-steps, .relay-controller-install-steps { list-style: none; padding: 0; margin: 22px 0; display: grid; gap: 16px; }
+.relay-controller-start-steps li, .relay-controller-install-steps li { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: start; gap: 12px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.relay-controller-start-steps li > span, .relay-controller-install-steps li > span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; color: var(--mint); background: color-mix(in srgb, var(--mint) 8%, var(--surface)); font-size: 12px; font-weight: 650; }
+.relay-controller-install-steps strong { display: block; color: var(--text); font-size: 14px; }
+.relay-controller-install-steps li p { margin: 5px 0 12px; font-size: 13px; }
+.relay-controller-card .relay-controller-install-steps button { font-size: 13px; }
+.relay-controller-card .relay-controller-fine-print { font-size: 12px; line-height: 1.6; margin-bottom: 0; }
+.relay-controller-copy-status { color: var(--mint) !important; font-size: 13px !important; }
+.relay-controller-card .relay-controller-pair-form { gap: 10px; margin-top: 24px; }
+.relay-controller-pair-form > small { margin-bottom: 8px; }
+.relay-controller-card .relay-controller-sync-code { min-height: 56px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 23px; letter-spacing: .16em; }
+.relay-controller-card .relay-controller-sync-code::placeholder { font-family: var(--font-ui, system-ui, sans-serif); font-size: 15px; letter-spacing: normal; }
+.relay-controller-card .relay-controller-connection-details { margin-top: 4px; margin-bottom: 0; }
+.relay-controller-card .relay-controller-connection-details summary { color: var(--muted); }
+.relay-controller-card .relay-controller-connection-details label { margin: 14px 0; }
+.relay-controller-card .relay-controller-paste { gap: 10px; }
+.relay-controller-card .relay-controller-paste label { margin: 0; }
+.relay-controller-address-detail { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px !important; overflow-wrap: anywhere; }
+.relay-controller-reconnecting { color: var(--mint) !important; font-size: 13px !important; }
+.relay-controller-download { display: flex; align-items: center; gap: 12px; padding: 14px; min-height: 48px; margin-top: 20px; border: 1px solid var(--line-soft); border-radius: 12px; color: var(--text); text-decoration: none; font-size: 14px; font-weight: 600; }
+.relay-controller-download > span { flex: 1; min-width: 0; }
+.relay-controller-download small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.relay-controller-download:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }

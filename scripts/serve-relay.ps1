@@ -164,6 +164,8 @@ try{
  if(-not $locked){Log 'Another Relay launcher owns this port.';exit 0}
  if(-not(Test-Path -LiteralPath $serverPath -PathType Leaf)){throw 'Relay server build is missing'}
  foreach($name in @('USERPROFILE','HOME','APPDATA','LOCALAPPDATA','TEMP','TMP','HOMEDRIVE','HOMEPATH')){$property=$config.environment.PSObject.Properties[$name];if($null -ne $property){[Environment]::SetEnvironmentVariable($name,[string]$property.Value,'Process')}}
+ $browserProperty=$config.environment.PSObject.Properties['PLAYWRIGHT_BROWSERS_PATH']
+ if($null -ne $browserProperty){$browserRoot=[IO.Path]::GetFullPath([string]$browserProperty.Value);$profileRoot=[IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile')).TrimEnd('\','/');if(-not [IO.Path]::IsPathRooted([string]$browserProperty.Value) -or -not $browserRoot.StartsWith($profileRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'The Relay browser cache must stay inside this Windows user profile.'};No-Links $browserRoot;$env:PLAYWRIGHT_BROWSERS_PATH=$browserRoot}
  $env:RELAY_DATA_DIR=$dataRoot;$env:PORT=[string]$port;$env:PATH=$config.path
  # Never inherit stale candidate controls into normal crash recovery.
  Remove-Item Env:RELAY_UPDATE_HOLD -ErrorAction SilentlyContinue;Remove-Item Env:RELAY_UPDATE_NONCE -ErrorAction SilentlyContinue

@@ -12,7 +12,7 @@ import type {ProviderId,ProviderAdapter} from '../shared/types.js';
 test('package and lock release version agree with actual temporary HTTP health and bootstrap',async()=>{
  const pkg=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8'));
  const lock=JSON.parse(await readFile(new URL('../package-lock.json',import.meta.url),'utf8'));
- assert.equal(pkg.version,'0.10.1');assert.equal(lock.version,pkg.version);assert.equal(lock.packages[''].version,pkg.version);
+ assert.equal(pkg.version,'0.11.0');assert.equal(lock.version,pkg.version);assert.equal(lock.packages[''].version,pkg.version);
  const root=await mkdtemp(join(tmpdir(),'relay-release-version-')),dataDir=join(root,'data'),vault=new SyntheticVault();let inspections=0;
  const adapters=Object.fromEntries(PROVIDER_IDS.map(id=>[id,{id,inspect:async()=>{inspections++;return{id,installed:false,authenticated:false,authMode:'unknown',accountLabel:'',plan:'',models:[]};},login:async()=>{throw Error('No account access');},stream:async()=>{throw Error('No inference');},close:async()=>{}}])) as unknown as Record<ProviderId,ProviderAdapter>;
  const app=createApp({dataDir,port:0,secretVault:vault,adapters,typesafeOptions:{fetch:async()=>{throw Error('No external service access');}}});

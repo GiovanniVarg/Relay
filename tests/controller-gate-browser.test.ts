@@ -86,7 +86,7 @@ for(const mode of ['separate-origin','same-origin'] as const)test(`actual ${mode
   await page.getByRole('button',{name:'Recheck connection',exact:true}).click();
   await page.getByLabel('Sync code',{exact:true}).waitFor();
   assert.equal(await page.getByRole('heading',{name:'Legacy HTTPS connection'}).count(),0);
-  await page.getByText('Device details',{exact:true}).click();
+  await page.getByText('Connection details',{exact:true}).click();
   const invite=access.devices.createInvite('controller');await page.getByLabel('This device’s name',{exact:true}).fill('Browser controller fixture');await page.getByLabel('Sync code',{exact:true}).fill(invite.code);await page.getByRole('button',{name:'Connect securely',exact:true}).click();await page.getByRole('region',{name:'Connected controller'}).waitFor().catch(async()=>{await page.getByLabel('Connected controller').waitFor();});await page.waitForFunction(()=>document.querySelector('[aria-label="Connected controller"] [role="status"]')?.textContent==='Connected');
   const connection=await page.evaluate(async modulePath=>{const storage=await import(modulePath);const saved=await storage.loadSelectedProfile();return {deviceId:saved.deviceId,id:saved.id,extractable:saved.privateKey.extractable,keys:Object.keys(saved)};},'/controller-storage.ts');
   assert.equal(connection.extractable,false);assert.equal(connection.keys.includes('code'),false);assert.equal(await page.evaluate(()=>navigator.serviceWorker.controller?.scriptURL.endsWith('/relay-controller-sw.js')),true);assert.equal(await page.evaluate(()=>(window as any).controllerMounts),1);

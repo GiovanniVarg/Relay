@@ -1,0 +1,12 @@
+{
+  "name": "relay-private-provider-runtimes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Official provider packages downloaded on the installing user's computer; never redistributed in Relay Setup.",
+  "dependencies": {
+    "@openai/codex": "0.169.0",
+    "@openai/codex-win32-x64": "npm:@openai/codex@0.169.0-win32-x64",
+    "@anthropic-ai/claude-code": "2.1.322",
+    "@anthropic-ai/claude-code-win32-x64": "2.1.322"
+  }
+}

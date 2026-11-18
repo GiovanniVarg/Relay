@@ -58,7 +58,7 @@ import {harnessApi} from './harness-api.js';
 import {Terminals,terminalCwd,type TerminalOptions} from './terminal.js';
 import {terminalApi} from './terminal-api.js';
 
-const version = '0.10.1';
+const version = '0.11.0';
 const providerId = (value: string): ProviderId => { if (!isActiveProviderId(value)) throw new HttpError(404, 'Provider not found'); return value as ProviderId; };
 const modeValue = (value: unknown): RouteMode => { if (value !== 'auto' && !isActiveProviderId(value)) throw new HttpError(400, 'Invalid routing mode'); return value as RouteMode; };
 const chatModeValue = (value: unknown): ChatMode => { if (value !== 'chat' && value !== 'work' && value !== 'auto' && value !== 'agent') throw new HttpError(400, 'Mode must be chat, work, auto or agent'); return value; };

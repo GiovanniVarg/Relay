@@ -246,9 +246,9 @@ export function NetworkPanel({ api, phoneOnly = false }: { api: Api; phoneOnly?:
 
   return <div className={`network-panel${phoneOnly ? ' network-phone' : ''}`}>
     <div className="network-intro">
-      <div className="network-row"><strong>One Relay host. Your own devices.</strong>
+      <div className="network-row"><strong>{phoneOnly ? 'Your Relay, on your phone' : 'One Relay host. Your own devices.'}</strong>
         <span className={`network-badge ${active ? 'is-ready' : ''}`}>{active ? 'Connections on' : status ? 'Connections off' : 'Loading…'}</span></div>
-      <p>Keep your devices on the same local network. A paired controller can use this host’s chats, files, terminal, and AI tools.</p>
+      <p>{phoneOnly ? 'Keep both devices on the same Wi-Fi or local network.' : 'Keep your devices on the same local network. A paired controller can use this host’s chats, files, terminal, and AI tools.'}</p>
     </div>
     <div className="network-notices" aria-live="polite">
       {error && <p className="network-error" role="alert">{error}</p>}
@@ -275,17 +275,17 @@ export function NetworkPanel({ api, phoneOnly = false }: { api: Api; phoneOnly?:
       aria-label={phoneOnly ? 'Phone connection' : undefined} aria-labelledby={phoneOnly ? undefined : `${id}-tab-${tab}`}>
       {tab === 'controller' && <>
         <h3>{phoneOnly ? 'Scan to connect your phone' : 'Use this host from your phone or browser'}</h3>
-        <p>Scan the QR, allow Local Network access if asked, then enter the one-time code below. Next time, Relay reconnects automatically.</p>
+        <p>Scan the QR with your phone. Then create a code here to securely connect that device.</p>
         {!active ? <button className="network-primary" type="button" onClick={enable} disabled={!!busy || !status || !address}>
-          {busy === 'enable' ? 'Enabling…' : 'Enable local connections'}</button> : !pairingReady ? <div className="network-error" role="alert"><strong>Simple pairing is not ready</strong><p>{status?.transportError || 'Restart Relay to finish starting its secure local connection. Legacy connection options are available under Advanced.'}</p></div> : <>
+          {busy === 'enable' ? 'Enabling…' : 'Enable local connections'}</button> : !pairingReady ? status?.transportError ? <div className="network-error" role="alert"><strong>Couldn’t start the secure connection</strong><p>{status.transportError}</p><p>Check this computer’s network connection. More options are under Advanced.</p></div> : <div className="network-preparing" role="status"><span className="network-preparing-mark" aria-hidden="true" /><div><strong>Preparing your secure connection…</strong><p>First-time setup can take a couple of minutes. Keep Relay open; the QR will appear here when it’s ready.</p></div></div> : <>
           <div className="network-onboarding">
             <div className="network-grow">
               <h4>1. Scan to open Relay</h4>
               {link && <a className="network-button network-primary" href={link} target="_blank" rel="noopener noreferrer">Open controller website</a>}
-              <p className="network-muted">No certificate installation needed. On iPhone, use Safari → Share → Add to Home Screen to keep Relay as an app.</p>
+              <p className="network-muted">No certificate installation needed. On iPhone, the controller will guide you through Safari or Home Screen setup before you connect.</p>
             </div>
             {link && !qrFailed && <figure className="network-qr">
-              <img src={`/api/network/connection-qr?origin=${encodeURIComponent(origin!)}`} width="160" height="160"
+              <img src={`/api/network/connection-qr?origin=${encodeURIComponent(origin!)}`} width="224" height="224"
                 alt="QR code for the controller website and public host connection details" onError={() => setQrFailed(true)} />
               <figcaption>Public connection details only. Enter the code separately.</figcaption>
             </figure>}
