@@ -1,0 +1,19 @@
+const crypto=require('node:crypto'),fs=require('node:fs'),http=require('node:http'),path=require('node:path'),{spawn}=require('node:child_process'),{pathToFileURL}=require('node:url');
+const instanceId=crypto.randomUUID(),data=process.env.RELAY_DATA_DIR,appRoot=path.resolve(__dirname,'../..');
+if(process.argv.includes('--controller')){const child=spawn(process.execPath,[__filename],{detached:true,stdio:'ignore',env:process.env});child.unref();setInterval(()=>{},1000);}else{
+ fs.writeFileSync(path.join(data,'fixture-node.pid'),String(process.pid));
+ const server=http.createServer(async(q,r)=>{try{
+  if(q.url==='/handoff'){
+   const helper=await import(pathToFileURL(path.join(appRoot,'scripts/activate-relay.mjs')).href),p=fs.promises,id=crypto.randomUUID(),directory=path.join(data,'self-update/jobs',id),snapshot=path.join(appRoot,'..','snapshot-'+id),supervisor=JSON.parse(await p.readFile(path.join(data,'supervisor',process.env.PORT,'state.json'),'utf8'));
+   if(supervisor.phase!=='monitoring'||supervisor.child.pid!==process.pid||supervisor.child.instanceId!==instanceId)throw Error('Fixture host is not ready for exact handoff');
+   await p.mkdir(path.join(snapshot,'dist/server'),{recursive:true});await p.mkdir(path.join(snapshot,'scripts'));
+   for(const file of ['package.json','Start-Relay.ps1','scripts/serve-relay.ps1','scripts/activate-relay.mjs','dist/server/index.js'])await p.copyFile(path.join(appRoot,file),path.join(snapshot,file));
+   await p.mkdir(directory,{recursive:true});const job={version:1,id,changeId:'job-proof-'+id,createdAt:new Date().toISOString(),installDirectory:appRoot,dataDirectory:data,snapshotDirectory:snapshot,backupDirectory:path.join(data,'self-update/backups',id),statusPath:path.join(directory,'status.json'),holdPath:path.join(directory,'startup.hold'),port:Number(process.env.PORT),oldPid:process.pid,nonce:crypto.randomBytes(32).toString('hex'),supervisor:{version:1,sessionId:supervisor.sessionId,oldInstanceId:instanceId},sourceFiles:await helper.scanTree(snapshot,[...helper.SOURCE_ROOTS,...helper.SOURCE_FILES]),baseFiles:await helper.scanTree(appRoot,[...helper.SOURCE_ROOTS,...helper.SOURCE_FILES]),distFiles:await helper.scanTree(snapshot,['dist']),dependencyFiles:[]};
+   await p.writeFile(path.join(directory,'job.json'),JSON.stringify(job));await p.writeFile(job.statusPath,JSON.stringify({jobId:id,changeId:job.changeId,status:'pending'}));await p.writeFile(path.join(data,'self-update/latest'),id);await p.copyFile(path.join(appRoot,'scripts/activate-relay.mjs'),path.join(directory,'activate-relay.mjs'));
+   const child=spawn(process.execPath,['--no-warnings',path.join(directory,'activate-relay.mjs'),'--job',path.join(directory,'job.json')],{cwd:directory,windowsHide:true,detached:true,stdio:'ignore'});fs.writeFileSync(path.join(data,'fixture-helper.pid'),String(child.pid));child.unref();
+   const end=Date.now()+60000;while(true){const status=JSON.parse(await p.readFile(job.statusPath,'utf8'));if(status.status==='waiting_for_shutdown')break;if(status.status==='failed'||Date.now()>end)throw Error('Fixture updater preflight failed');await new Promise(done=>setTimeout(done,50));}
+   r.setHeader('content-type','application/json');r.end(JSON.stringify({jobId:id}));setTimeout(()=>server.close(()=>process.exit(0)),100);return;
+  }
+  r.setHeader('content-type','application/json');r.end(JSON.stringify({ok:true,service:'relay',fixture:true,pid:process.pid,instanceId,updateNonce:process.env.RELAY_UPDATE_NONCE??null,updateHeld:!!(process.env.RELAY_UPDATE_HOLD&&fs.existsSync(process.env.RELAY_UPDATE_HOLD)),dataDirectoryId:crypto.createHash('sha256').update(path.resolve(data).toLowerCase()).digest('hex'),profile:process.env.HOME,cwd:process.cwd()}));
+ }catch(error){r.statusCode=500;r.end(JSON.stringify({error:error.message}));}});server.listen(Number(process.env.PORT),'127.0.0.1');
+}

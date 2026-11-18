@@ -1,0 +1,29 @@
+.assignment-activity { display: grid; gap: 12px; min-width: 0; width: 100%; color: var(--text, #23342d); }
+.assignment-card { min-width: 0; padding: 16px 18px; border: 1px solid var(--line, #dce6df); background: var(--surface, #fff); border-radius: 16px; overflow-wrap: anywhere; }
+.assignment-card header, .assignment-heading, .assignment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.assignment-card header { justify-content: space-between; gap: 10px; }
+.assignment-heading strong { font-size: 14px; font-weight: 650; }
+.assignment-heading > span, .assignment-progress, .assignment-preview, .assignment-context { color: var(--muted, #6b7e73); font-size: 12px; line-height: 1.6; }
+.assignment-state { border: 1px solid var(--line, #dce6df); padding: 3px 9px; border-radius: 99px; font-size: 11px; line-height: 1.5; text-transform: capitalize; color: var(--muted, #6b7e73); }
+.assignment-state.is-active { color: var(--text, #23342d); background: color-mix(in srgb, var(--mint, #b8dfc9) 30%, transparent); }
+.assignment-card p { margin: 10px 0; white-space: pre-wrap; }
+.assignment-actions { margin-top: 12px; }
+.assignment-card button { min-height: 36px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--line, #dce6df); color: var(--text, #23342d); background: var(--surface, #fff); font: inherit; font-size: 12px; cursor: pointer; }
+.assignment-card button:disabled { opacity: .55; cursor: default; }
+.assignment-card :is(button,input,select,textarea,summary):focus-visible { outline: 2px solid var(--mint, #73b391); outline-offset: 3px; }
+.assignment-error, .assignment-attention { color: var(--text, #23342d); border-left: 3px solid var(--line, #dce6df); padding-left: 10px; font-size: 12px; line-height: 1.6; }
+.assignment-expanded { display: grid; gap: 12px; margin-top: 16px; min-width: 0; }
+.assignment-events { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 1px solid var(--line, #dce6df); display: grid; gap: 10px; }
+.assignment-events li > span { font-size: 11px; color: var(--muted, #6b7e73); text-transform: capitalize; }
+.assignment-events li p { margin: 3px 0 0; font-size: 12px; line-height: 1.5; }
+.assignment-result { min-width: 0; font-size: 14px; line-height: 1.65; }
+.assignment-result :is(pre,table) { max-width: 100%; overflow: auto; }
+.assignment-guidance, .assignment-remote-question form { display: grid; gap: 10px; min-width: 0; }
+.assignment-card label { display: grid; gap: 6px; font-size: 12px; line-height: 1.5; min-width: 0; }
+.assignment-card :is(textarea,select) { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; border: 1px solid var(--line, #dce6df); border-radius: 9px; background: var(--surface, #fff); color: var(--text, #23342d); padding: 10px; font: inherit; font-size: 16px; }
+.assignment-card textarea { resize: vertical; }
+.assignment-questions:empty { display: none; }
+.assignment-remote-question { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line, #dce6df); font-size: 13px; line-height: 1.6; }
+.assignment-context { border-top: 1px solid var(--line, #dce6df); padding-top: 10px; }
+.assignment-context summary { cursor: pointer; width: fit-content; }
+@media (max-width: 420px) { .assignment-card { padding: 14px 12px; } .assignment-actions button { min-height: 42px; } }

@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
+import {Store} from '../server/store.js';
+import {Attachments} from '../server/attachments.js';
+test('snapshot planning and integrity validation include group claims and unclaimed Boss drafts',async()=>{const root=mkdtempSync(join(tmpdir(),'relay-all-chat-snapshot-')),store=new Store(root,{deferRecovery:true}),files=new Attachments(store),agent=store.createAgent({name:'Member'}),roomId=randomUUID(),messageId=randomUUID();try{store.put('group-room',{id:roomId,title:'Team',agentIds:[agent.id],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});const scope={surface:'group',roomId} as const,group=await files.createDraft({...scope,name:'group.txt',mimeType:'text/plain',base64:Buffer.from('Group document').toString('base64')}),boss=await files.createDraft({surface:'dispatcher',draftId:randomUUID(),name:'boss.txt',mimeType:'text/plain',base64:Buffer.from('Boss draft').toString('base64')});store.transaction(()=>{store.put('group-message',{id:messageId,roomId,role:'user',agentId:null,authorName:'You',content:'Read',attachments:[group],createdAt:new Date().toISOString(),runId:null,status:'complete',route:null});files.claimDrafts(scope,[group.id],messageId);});const run=(mode:string)=>spawnSync(process.execPath,[resolve('scripts/attachment-snapshot.cjs'),mode,join(root,'relay.sqlite'),root],{encoding:'utf8',windowsHide:true});const plan=run('plan');assert.equal(plan.status,0,plan.stdout+plan.stderr);assert.deepEqual(JSON.parse(plan.stdout).map((f:any)=>f.path).sort(),[group.id,boss.id].flatMap(id=>['attachments/'+id+'.bin','attachments/'+id+'.txt']).sort());assert.equal(run('validate-files').status,0);store.remove('group-message',messageId);assert.notEqual(run('plan').status,0,'deleted owning group message must fail closed');}finally{await files.close();store.close();rmSync(root,{recursive:true,force:true});}});

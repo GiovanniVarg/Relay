@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mergeConversationMessages } from '../client/ConversationMessages.js';
+import type { Message } from '../shared/types.js';
+const entry=(id:string,role:Message['role'],createdAt:string,runId:string|null=null,status:Message['status']='complete'):Message=>({id,conversationId:'chat',role,content:id,createdAt,runId,status});
+const initial=entry('task','user','2026-10-23T15:00:00.000Z','run');
+const question=entry('question','assistant','2026-10-23T15:00:00.001Z');
+const human=entry('teal','user','2026-10-23T15:00:00.002Z','run');
+const final=entry('final','assistant','2026-10-23T15:00:00.003Z','run');
+test('typed answer arriving after SSE done preserves question-human-final order without duplicates',()=>{const doneFirst=mergeConversationMessages([initial], [final]);const result=mergeConversationMessages(doneFirst,[question,human]);assert.deepEqual(result.map(message=>message.id),['task','question','teal','final']);assert.deepEqual(mergeConversationMessages(result,[question,human,final]),result);});
+test('typed answer arriving before SSE done keeps streaming reply after the human',()=>{const streaming={...final,createdAt:initial.createdAt,status:'streaming' as const};const answerFirst=mergeConversationMessages([initial,streaming],[question,human]);assert.deepEqual(answerFirst.map(message=>message.id),['task','question','teal','final']);assert.deepEqual(mergeConversationMessages(answerFirst,[final]).map(message=>message.id),['task','question','teal','final']);});

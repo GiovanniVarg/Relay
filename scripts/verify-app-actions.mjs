@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
+import { createApp } from '../dist/server/index.js';
+import { CodexAdapter } from '../dist/server/providers/codex.js';
+const live=process.argv.includes('--live');
+if(!live)throw Error('This opt-in proof uses one included OpenAI subscription call. Run with --live.');
+const stamp=crypto.randomUUID().slice(0,8), root=resolve('.data-app-actions-proof',stamp);
+await mkdir(root,{recursive:true});
+const boot=await(await fetch('http://127.0.0.1:3210/api/bootstrap')).json();
+const state=boot.providers.find(p=>p.id==='openai');
+assert.equal(state.billing.mode,'included');assert.equal(state.billing.confirmed,true);
+const model='gpt-6-luna';
+assert.ok(state.models.some(m=>m.id===model));assert.ok(state.modelPreferences.allowedModels===null||state.modelPreferences.allowedModels.includes(model));
+const native=new CodexAdapter(join(homedir(),'.relay-data'));
+const checked=await native.inspect();assert.equal(checked.authenticated,true);assert.equal(checked.accountLabel,state.accountLabel);assert.equal(checked.plan,state.plan);
+const offline=id=>({id,inspect:async()=>({id,installed:false,authenticated:false,authMode:'unknown',accountLabel:'',plan:'',models:[]}),login:async()=>{throw Error('No login in acceptance');},close:async()=>{},stream:async()=>{throw Error('No alternate provider calls');}});
+const app=createApp({port:0,dataDir:join(root,'store'),adapters:{openai:native,...Object.fromEntries(['claude','cursor','gemini','grok'].map(id=>[id,offline(id)]))}});
+let proof;
+try{
+ await app.runs.refresh();app.store.saveBilling('openai',{...state.billing,automaticRouting:false});app.store.saveModelPreferences('openai',{defaultModel:model,allowedModels:[model]});
+ const roster=app.store.list('agent');const lead=app.store.put('agent',{...roster[0],routeMode:'openai',model,mode:'agent',workspace:'',instructions:'Use the provided Relay app tools when asked to modify Relay. Only make the exact requested changes. Never claim an action succeeded unless the tool returned its real result. Do not use files or shell.'});
+ const conversation=app.store.conversations(lead.id)[0];const name='Acceptance '+stamp,title='Acceptance group '+stamp;
+ const prompt=`Use Relay tools now: create exactly one bot named ${JSON.stringify(name)} with role Researcher and instructions "Compare options concisely". List bots to find Neo and Oracle. Create exactly one moderated group named ${JSON.stringify(title)} with Neo and Oracle, Oracle as moderator. Do not start the discussion. Report both actual IDs returned by the tools.`;
+ const {run}=app.runs.accept(lead,conversation.id,prompt,'openai',model,'agent');await app.runs.active.get(run.id)?.promise;
+ const ended=app.store.get('run',run.id);assert.equal(ended.status,'complete',ended.error);
+ const bots=app.store.list('agent').filter(b=>b.name===name),rooms=app.store.list('group-room').filter(r=>r.title===title);
+ assert.equal(bots.length,1);assert.equal(bots[0].mode,'agent');assert.equal(rooms.length,1);assert.equal(rooms[0].mode,'moderated');
+ const text=app.store.get('message',ended.messageId).content;assert.ok(text.includes(bots[0].id));assert.ok(text.includes(rooms[0].id));
+ const receipts=app.store.list('app-action');assert.ok(receipts.some(r=>r.name==='relay_create_bot'&&r.status==='complete'));assert.ok(receipts.some(r=>r.name==='relay_create_group'&&r.status==='complete'));assert.equal(app.store.list('group-run').length,0);assert.equal(app.scheduler.activeCount,0);
+ proof={passed:true,provider:'openai',model,kind:'actual-included-subscription-native-dynamic-app-tools',oneCreatedBot:true,oneCreatedModeratedGroup:true,actualIdsReturned:true,noDiscussionInference:true,appOnlyAgent:true,root};
+ console.log(JSON.stringify(proof));
+}finally{await app.close();await writeFile(join(root,'proof.json'),JSON.stringify(proof??{passed:false},null,2));}

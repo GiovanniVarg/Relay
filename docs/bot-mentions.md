@@ -1,0 +1,9 @@
+# Bot mentions
+
+Type `@` at the beginning of a message or after whitespace to open the bot picker above the composer. Type a name or role to filter. Use Up/Down and Enter or Tab, or click a bot. Escape dismisses the picker. Selecting inserts the mention and preserves the rest of the draft; it never submits a task by itself. An unmatched query cannot accidentally send on Enter while the picker is open.
+
+The same picker is available in simple and advanced direct chats, group discussions, lead/worker chats and Boss Chat. Photos and initials use the existing bot avatar. The popup follows the composer, supports narrow viewports and uses the active light/dark theme. Email addresses do not trigger it.
+
+In Boss Chat, send `@Bot name: task` to assign a new task to that bot. If another job is active, use `new: @Bot name: task`. While choosing a requested recipient, the picker shows eligible recipients and inserts only the recipient. Duplicate or syntax-bearing names use stable IDs; exact IDs resolve before display names, while ambiguous display names are rejected. Mentioning a bot inside a direct or group message is part of that message; it does not automatically start an independent run or change execution permissions. Existing Agent delegation tools remain responsible for delegated work.
+
+Verification: helper tests cover token boundaries, filtering, draft/caret preservation, length limits and identity collisions. Synthetic mounted browser tests exercise direct/group/Boss selection, no accidental send, replies, composition, attachments and narrow light/dark layouts. They do not spend model allowance.

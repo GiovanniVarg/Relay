@@ -1,0 +1,1 @@
+export function RelayMark(){return <svg className="relay-wave" width="28" height="28" viewBox="0 0 40 40" aria-hidden="true"><path d="M4 18C10 4 18 5 23 16S32 29 37 15" fill="none" stroke="var(--amber)" strokeWidth="4.5" strokeLinecap="round"/><path d="M3 27C9 13 17 14 22 25S31 38 36 24" fill="none" stroke="var(--mint)" strokeWidth="4.5" strokeLinecap="round"/></svg>;}
