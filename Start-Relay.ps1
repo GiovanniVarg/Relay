@@ -1,5 +1,8 @@
 param([switch]$NoBrowser,[int]$Port=3210,[switch]$LocalInstall,[switch]$Stop,[switch]$Recover,[string]$RecoveryReceipt='',[string]$RecoveryReceiptSha256='')
 $ErrorActionPreference='Stop'
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Management','Microsoft.PowerShell.Management.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdlets.psd1')) -ErrorAction Stop
 if($Recover){if($Stop -or -not $RecoveryReceipt -or $RecoveryReceiptSha256 -notmatch '^[a-f0-9]{64}$'){throw 'Recovery requires its exact reviewed receipt path and external SHA256, and cannot stop a process'}}elseif($RecoveryReceipt -or $RecoveryReceiptSha256){throw 'Recovery receipt requires explicit -Recover'}
 $appRoot=$PSScriptRoot
 $preferredRoot=Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Relay'

@@ -5,6 +5,8 @@ import { JsonLines } from '../providers/process.js';
 const SCRIPT = String.raw`
 param([int]$WorkerPid)
 $ErrorActionPreference = 'Stop'
+# Filtered provider environments must not depend on Utility module auto-discovery.
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -69,7 +71,7 @@ try {
   while ($null -ne ($line = [Console]::ReadLine())) {
     if ($line -eq 'drain') {
       $pids = @([RelayJobGuard]::Drain($WorkerPid))
-      [Console]::Out.WriteLine((@{type='drained';pids=$pids} | ConvertTo-Json -Compress));[Console]::Out.Flush()
+      [Console]::Out.WriteLine((@{type='drained';pids=$pids} | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress));[Console]::Out.Flush()
     } elseif ($line -eq 'release') {
       [RelayJobGuard]::Release($WorkerPid)
       [Console]::Out.WriteLine('{"type":"released"}');[Console]::Out.Flush()

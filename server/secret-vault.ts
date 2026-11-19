@@ -11,6 +11,8 @@ export interface SecretProtector {
 }
 export interface SecretAcl {
   secureDirectory(directory: string): Promise<void>;
+  /** Only a newly O_EXCL-created empty vault temporary file; never an existing credential. */
+  secureFile(file: string): Promise<void>;
   verify(paths: string[]): Promise<void>;
 }
 export interface SecretVaultOptions { protector?: SecretProtector; acl?: SecretAcl; platform?: NodeJS.Platform }
@@ -19,7 +21,11 @@ export interface SecretVaultOptions { protector?: SecretProtector; acl?: SecretA
 const bridgeScript = String.raw`
 $ErrorActionPreference='Stop'
 try {
-  $request=[Console]::In.ReadToEnd()|ConvertFrom-Json
+  # Load the trusted built-in module before processing anonymous-pipe input.
+  Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+  Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Management','Microsoft.PowerShell.Management.psd1')) -ErrorAction Stop
+  Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Security','Microsoft.PowerShell.Security.psd1')) -ErrorAction Stop
+  $request=[Console]::In.ReadToEnd()|Microsoft.PowerShell.Utility\ConvertFrom-Json
   $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
   $system=New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
   if($request.op -eq 'secure') {
@@ -33,6 +39,31 @@ try {
     }
     Set-Acl -LiteralPath $request.directory -AclObject $acl
     $item.Attributes=$item.Attributes -bor [IO.FileAttributes]::Hidden
+    [Console]::Out.Write('{"ok":true}')
+  } elseif($request.op -eq 'secure-file') {
+    $directory=[IO.Path]::GetFullPath([string]$request.directory)
+    $file=[IO.Path]::GetFullPath([string]$request.file)
+    if([IO.Path]::GetFileName($directory) -cne 'secure-credentials' -or -not [IO.Path]::GetDirectoryName($file).Equals($directory,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($file) -cnotmatch '\A\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp\z'){throw 'temporary'}
+    $parent=Get-Item -LiteralPath $directory -Force
+    if(-not $parent.PSIsContainer -or ($parent.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'unsafe'}
+    $parentAcl=Get-Acl -LiteralPath $directory
+    if($parentAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or -not $parentAcl.AreAccessRulesProtected){throw 'owner'}
+    $seen=@{}
+    foreach($rule in $parentAcl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])) {
+      $id=$rule.IdentityReference.Value
+      if(($id -ne $sid.Value -and $id -ne $system.Value) -or $rule.AccessControlType -ne 'Allow' -or ($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl){throw 'rights'}
+      $seen[$id]=$true
+    }
+    if(-not $seen[$sid.Value] -or -not $seen[$system.Value]){throw 'missing'}
+    $item=Get-Item -LiteralPath $file -Force
+    if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -ne 0){throw 'unsafe'}
+    $acl=New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true,$false);$acl.SetOwner($sid)
+    foreach($principal in @($sid,$system)) {
+      $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($principal,'FullControl','Allow')
+      $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $file -AclObject $acl
     [Console]::Out.Write('{"ok":true}')
   } elseif($request.op -eq 'verify') {
     foreach($path in $request.paths) {
@@ -108,6 +139,7 @@ function nativeDependencies():{protector:SecretProtector;acl:SecretAcl} {
     protector:{protect:(value,purpose)=>crypt('protect',value,purpose),unprotect:(value,purpose)=>crypt('unprotect',value,purpose)},
     acl:{
       async secureDirectory(directory){if(!(await bridge({op:'secure',directory})).ok)throw failure();},
+      async secureFile(file){if(!(await bridge({op:'secure-file',directory:dirname(file),file})).ok)throw failure();},
       async verify(paths){if(!(await bridge({op:'verify',paths})).ok)throw failure();}
     }
   };
@@ -151,6 +183,10 @@ export class SecretVault {
       await this.links(this.directory);await this.acl.verify([this.directory]);this.assertOpen();return true;
     }catch{this.assertOpen();throw failure();}
   }
+  private async sameTemporary(path:string,identity:{dev:bigint;ino:bigint}):Promise<void>{
+    await this.links(path);const stat=await lstat(path,{bigint:true});
+    if(!stat.isFile()||stat.nlink!==1n||stat.dev!==identity.dev||stat.ino!==identity.ino)throw failure();
+  }
   async has(name:string):Promise<boolean>{return (await this.get(name))!==null;}
   async get(name:string):Promise<string|null>{
     const file=this.file(name);
@@ -184,16 +220,21 @@ export class SecretVault {
       this.assertOpen();check?.();
       const envelope=Buffer.from(JSON.stringify({version:1,name,protection:'windows-dpapi',ciphertext:cipher.toString('base64')}));cipher.fill(0);
       if(envelope.length>MAX_FILE)throw failure();
-      const temporary=join(this.directory,'.'+randomUUID()+'.tmp');let created=false;
+      const temporary=join(this.directory,'.'+randomUUID()+'.tmp');let created=false,identity:{dev:bigint;ino:bigint}|undefined;
       try{
         await this.links(this.directory);await this.acl.verify([this.directory]);
         if(await this.links(file,true))await this.acl.verify([file]);
         const handle=await open(temporary,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|(constants.O_NOFOLLOW??0),0o600);created=true;
-        try{await this.links(temporary);await this.acl.verify([this.directory,temporary]);await handle.writeFile(envelope);await handle.sync();}finally{await handle.close();}
-        await this.links(this.directory);await this.links(temporary);await this.acl.verify([this.directory,temporary]);
+        try{
+          const opened=await handle.stat({bigint:true});if(!opened.isFile()||opened.nlink!==1n||opened.size!==0n)throw failure();identity={dev:opened.dev,ino:opened.ino};
+          await this.sameTemporary(temporary,identity);await this.acl.secureFile(temporary);await this.sameTemporary(temporary,identity);
+          const retained=await handle.stat({bigint:true});if(!retained.isFile()||retained.nlink!==1n||retained.size!==0n||retained.dev!==identity.dev||retained.ino!==identity.ino)throw failure();
+          await this.acl.verify([this.directory,temporary]);await handle.writeFile(envelope);await handle.sync();
+        }finally{await handle.close();}
+        await this.links(this.directory);await this.sameTemporary(temporary,identity!);await this.acl.verify([this.directory,temporary]);
         if(await this.links(file,true))await this.acl.verify([file]);
         this.assertOpen();check?.();await rename(temporary,file);created=false;
-      }finally{envelope.fill(0);if(created)await unlink(temporary).catch(()=>{});}
+      }finally{envelope.fill(0);if(created&&identity)await this.sameTemporary(temporary,identity).then(()=>unlink(temporary)).catch(()=>{});}
     });
   }
   async remove(name:string):Promise<void>{

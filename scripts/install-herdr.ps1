@@ -1,5 +1,8 @@
 param([string]$DestinationRoot = '')
 $ErrorActionPreference = 'Stop'
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Management','Microsoft.PowerShell.Management.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Archive','Microsoft.PowerShell.Archive.psd1')) -ErrorAction Stop
 if($PSVersionTable.PSVersion.Major -lt 6){$env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+$env:PSModulePath}
 function Get-RelaySha256([string]$Path){$stream=[IO.File]::OpenRead($Path);$algorithm=[Security.Cryptography.SHA256]::Create();try{return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose();$algorithm.Dispose()}}
 $projectRoot = Split-Path -Parent $PSScriptRoot

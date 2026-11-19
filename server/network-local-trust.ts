@@ -34,6 +34,7 @@ const windowsOperation: LocalTrustOperation = async (operation, derBase64, finge
   const executable = join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   // Only validated public DER and hex enter this fixed command. No writable script or shell lookup.
   const script = `$ErrorActionPreference='Stop'
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
 $der=[Convert]::FromBase64String('${derBase64}')
 $expected='${fingerprint}'
 $sha=[Security.Cryptography.SHA256]::Create()

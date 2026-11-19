@@ -1,5 +1,8 @@
 param([ValidateSet('install','launch','uninstall')][string]$Mode='install',[Parameter(Mandatory=$true)][string]$BundleDirectory,[Parameter(Mandatory=$true)][string]$Destination,[string]$DataRoot='',[int]$Port=3210,[switch]$NoIntegrations,[switch]$AutoStart,[switch]$NoBrowser,[string]$BrowserCache='')
 $ErrorActionPreference='Stop'
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Management','Microsoft.PowerShell.Management.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdlets.psd1')) -ErrorAction Stop
 $stage=$null;$stageToken=$null
 trap{if($_.Exception.Message -notmatch 'Unconfirmed setup cleanup'){Clear-Stage};[Console]::WriteLine('ERROR|'+($_.Exception.Message -replace '[\r\n]+',' '));exit 1}
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)

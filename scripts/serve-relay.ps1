@@ -1,5 +1,8 @@
 param([Parameter(Mandatory=$true)][string]$Configuration)
 $ErrorActionPreference='Stop'
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Management','Microsoft.PowerShell.Management.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdlets.psd1')) -ErrorAction Stop
 $config=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Configuration))|ConvertFrom-Json)
 $appRoot=[IO.Path]::GetFullPath([string]$config.appRoot);$dataRoot=[IO.Path]::GetFullPath([string]$config.dataRoot);$port=[int]$config.port
 if($port -lt 1 -or $port -gt 65535 -or -not [IO.Path]::IsPathRooted($config.appRoot) -or -not [IO.Path]::IsPathRooted($config.dataRoot)){throw 'Invalid supervisor configuration'}

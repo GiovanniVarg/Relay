@@ -35,6 +35,7 @@ jobs:
       release_tag: ${{ steps.request.outputs.tag }}
       release_sha: ${{ steps.identity.outputs.sha }}
       release_mode: ${{ steps.request.outputs.mode }}
+      native_integration_verified: ${{ steps.native_integration.outputs.verified }}
     defaults:
       run:
         shell: pwsh
@@ -153,7 +154,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Type checking failed.' }
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-      - name: Compare trusted imports in the actual native helpers
+      - name: Compare actual native and vault helper bootstrap
         if: steps.request.outputs.mode == 'diagnostics'
         timeout-minutes: 8
         working-directory: ${{ env.RELAY_BUILD_ROOT }}
@@ -169,7 +170,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { $failures += $name }
           }
           if ($failures.Count) { throw ('Synthetic diagnostics failed: ' + ($failures -join ', ') + '. Inspect their bounded receipts; this is not a release pass.') }
-      - name: Retain synthetic diagnostic receipts only
+      - name: Retain actual-helper diagnostic receipts
         if: always() && steps.request.outputs.mode == 'diagnostics'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -198,8 +199,33 @@ jobs:
           $names = @(('Relay-Setup-' + $version + '-beta-windows-x64.exe'), 'SHA256SUMS.txt', 'components.json', 'THIRD_PARTY_NOTICES.txt')
           $files = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'relay-release') -File)
           if ($files.Count -ne 4 -or @($files | Where-Object { $_.Name -notin $names }).Count) { throw 'Only installer, checksum, components and notices may be uploaded.' }
-      - name: Retain only the checked release assets
+      - name: Verify five required actual installer and clean lifecycle cases
+        id: native_integration
         if: steps.request.outputs.mode == 'release'
+        timeout-minutes: 30
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $env:RELAY_RUN_INSTALLER_CI_INTEGRATION = '1'
+          $env:RELAY_TEST_INSTALLER_PATH = Join-Path (Join-Path $env:RUNNER_TEMP 'relay-release') ('Relay-Setup-' + $version + '-beta-windows-x64.exe')
+          $env:RELAY_INSTALLER_CI_RECEIPTS = Join-Path $env:RUNNER_TEMP 'relay-installer-ci-receipts'
+          if (-not (Test-Path -LiteralPath $env:RELAY_TEST_INSTALLER_PATH -PathType Leaf)) { throw 'The exact built installer is missing; native verification cannot be skipped.' }
+          node node_modules/tsx/dist/cli.mjs --test --test-concurrency=1 tests/integration/installer-native.integration.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Required installer native integration failed; no release assets will be uploaded.' }
+          node scripts/installer/verify-ci-receipts.mjs $env:RELAY_INSTALLER_CI_RECEIPTS $env:RELAY_TEST_INSTALLER_PATH $version
+          if ($LASTEXITCODE -ne 0) { throw 'Installer receipts did not prove every exact case and confirmed cleanup.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "verified=true`n", [Text.UTF8Encoding]::new($false))
+      - name: Retain native integration receipts separately from release assets
+        if: always() && steps.request.outputs.mode == 'release'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer-ci-receipts
+          path: ${{ runner.temp }}/relay-installer-ci-receipts/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain only the checked release assets
+        if: steps.request.outputs.mode == 'release' && steps.native_integration.outputs.verified == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-beta-installer
@@ -214,7 +240,7 @@ jobs:
 
   publish:
     needs: build
-    if: needs.build.outputs.release_mode == 'release' && github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: needs.build.outputs.release_mode == 'release' && needs.build.outputs.native_integration_verified == 'true' && github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: windows-2025
     timeout-minutes: 15
     permissions:
@@ -270,7 +296,7 @@ jobs:
             '',
             'Setup downloads verified Node and locked official packages automatically. No terminal commands or system Node installation are needed. Sign in with your own subscriptions inside Relay; no signed-in accounts, chats or API keys are included.',
             '',
-            'This beta may show normal Windows publisher/reputation warnings. It does not bypass OS protections. macOS desktop installation is not included in this Windows release.',
+            'This Windows beta is unsigned. Code signing and endpoint-security acceptance have not been established. Relay does not bypass Windows or endpoint protections. macOS desktop installation is not included.',
             '',
             ('Source: https://github.com/' + $env:GH_REPO + '/tree/' + $env:RELAY_RELEASE_TAG)
           ) -join [Environment]::NewLine

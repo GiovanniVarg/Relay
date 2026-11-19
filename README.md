@@ -1,6 +1,6 @@
 # Relay
 
-> **Beta / testing — 0.11.0.** Windows x64 gets a graphical installer and guided device pairing. Physical iPhone verification remains a device check; macOS packaging follows separately.
+> **Beta / testing — 0.11.1.** Windows x64 gets a graphical installer and guided device pairing. Physical iPhone verification remains a device check; macOS packaging follows separately.
 
 A local, conversational workspace for multiple agents and your ChatGPT, Claude, Cursor and OpenCode connections. Keep conversations, job activity, bot browsers and terminals together. Simple mode centers the conversation; Advanced exposes routing, accounts and execution settings.
 
@@ -8,7 +8,7 @@ Project: [GiovanniVarg/Relay](https://github.com/GiovanniVarg/Relay). Feedback a
 
 ## Install on Windows
 
-[**Download Relay for Windows**](https://github.com/GiovanniVarg/Relay/releases/download/v0.11.0-beta/Relay-Setup-0.11.0-beta-windows-x64.exe)
+[**Download Relay for Windows**](https://github.com/GiovanniVarg/Relay/releases/download/v0.11.1-beta/Relay-Setup-0.11.1-beta-windows-x64.exe)
 
 1. Open **Relay Setup** and click **Install Relay**.
 2. Setup prepares the required components automatically. There are no terminal commands or separate Node installation steps.

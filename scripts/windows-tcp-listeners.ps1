@@ -1,3 +1,6 @@
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Management','Microsoft.PowerShell.Management.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdlets.psd1')) -ErrorAction Stop
 # Native listener CATEGORY, not a State=0 fallback. This script has no process-control operations.
 # GetExtendedTcpTable's fixed OWNER_PID_LISTENER query supplies the listening classification.
 if (-not ('RelayNativeTcpListeners' -as [type])) {

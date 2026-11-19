@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile, link, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile, link, symlink, lstat, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { SecretVault, type SecretProtector, type SecretAcl } from '../server/secret-vault.js';
 
@@ -20,10 +20,61 @@ function dependencies() {
     }
   };
   let valid = true;
-  const acl: SecretAcl = { async secureDirectory() {}, async verify() { if (!valid) throw Error('unsafe fixture ACL'); } };
+  const acl: SecretAcl = { async secureDirectory() {}, async secureFile() {}, async verify() { if (!valid) throw Error('unsafe fixture ACL'); } };
   return { protector, acl, corruptAcl() { valid=false; } };
 }
 async function fixture() { return mkdtemp(join(tmpdir(),'relay-vault-')); }
+
+test('new vault temporary files are secured empty before verification and writes; existing reads are verify-only', async () => {
+  const dir=await fixture(),deps=dependencies(),secured=new Set<string>(),events:string[]=[];
+  const acl:SecretAcl={...deps.acl,
+    async secureFile(file){
+      assert.equal(dirname(file),join(dir,'secure-credentials'));assert.match(basename(file),/^\.[a-f0-9-]{36}\.tmp$/);
+      const stat=await lstat(file);assert.equal(stat.isFile(),true);assert.equal(stat.nlink,1);assert.equal(stat.size,0);
+      assert.equal(secured.has(file),false);secured.add(file);events.push('secure-empty');
+    },
+    async verify(paths){
+      await deps.acl.verify(paths);
+      for(const file of paths.filter(path=>path.endsWith('.tmp'))){assert.equal(secured.has(file),true,'temporary ACL must be installed before strict verification');events.push((await lstat(file)).size===0?'verify-empty':'verify-written');}
+    },
+  };
+  const vault=new SecretVault(dir,{...deps,acl});
+  try{
+    await vault.set('typesafe-api-key','synthetic-secret');
+    assert.deepEqual(events,['secure-empty','verify-empty','verify-written']);
+    const securedCount=secured.size;assert.equal(await vault.get('typesafe-api-key'),'synthetic-secret');assert.equal(secured.size,securedCount);
+    await vault.set('typesafe-api-key','replacement-secret');assert.equal(secured.size,2,'replacement secures a different newly created temporary, never the final file');
+    assert.equal(await vault.get('typesafe-api-key'),'replacement-secret');
+    assert.ok([...secured].every(file=>basename(file).startsWith('.')&&file.endsWith('.tmp')));
+  }finally{vault.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('a refused new-file ACL persists no new secret and never reowns an existing credential', async () => {
+  const dir=await fixture(),deps=dependencies(),vault=new SecretVault(dir,deps);let secureCalls=0;
+  try{
+    await vault.set('typesafe-api-key','original-secret');
+    const file=join(dir,'secure-credentials','typesafe-api-key.dpapi'),before=await readFile(file);
+    const failing=new SecretVault(dir,{...deps,acl:{...deps.acl,async secureFile(temporary){secureCalls++;assert.equal((await lstat(temporary)).size,0);assert.notEqual(temporary,file);throw Error('synthetic new-file ACL refused');}}});
+    try{await assert.rejects(failing.set('typesafe-api-key','never-persisted'),/ACL refused/);}finally{failing.close();}
+    assert.equal(secureCalls,1);assert.deepEqual(await readFile(file),before);assert.equal(await vault.get('typesafe-api-key'),'original-secret');
+    assert.deepEqual(await readdir(join(dir,'secure-credentials')),['typesafe-api-key.dpapi']);
+    const badExisting=new SecretVault(dir,{...deps,acl:{...deps.acl,async secureFile(){assert.fail('An existing invalid owner must not trigger reownership');},async verify(paths){if(paths.includes(file))throw Error('synthetic wrong existing owner');}}});
+    try{await assert.rejects(badExisting.set('typesafe-api-key','not-authorized'),/wrong existing owner/);}finally{badExisting.close();}
+    assert.deepEqual(await readFile(file),before);
+  }finally{vault.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('a swapped temporary file is rejected before ciphertext write and unknown replacement is not deleted', async () => {
+  const dir=await fixture(),deps=dependencies();let replaced='',displaced='';
+  const vault=new SecretVault(dir,{...deps,acl:{...deps.acl,async secureFile(file){
+    replaced=file;displaced=file+'.displaced';await rename(file,displaced);await writeFile(file,'',{flag:'wx'});
+  }}});
+  try{
+    await assert.rejects(vault.set('typesafe-api-key','never-written'),/credential/i);
+    assert.equal((await lstat(replaced)).size,0);assert.equal((await lstat(displaced)).size,0);
+    assert.equal(await vault.get('typesafe-api-key'),null);
+  }finally{vault.close();await rm(dir,{recursive:true,force:true});}
+});
 
 test('encrypted secrets survive restart without plaintext files and remove cleanly', async () => {
   const dir=await fixture(), deps=dependencies(), secret='fixture-key-DO-NOT-STORE-PLAINTEXT';

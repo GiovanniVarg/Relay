@@ -2,7 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ATTACHMENT_LIMITS, type AttachmentMime, type AttachmentParseResult, type AttachmentErrorCode } from '../shared/attachments.js';
 export class AttachmentError extends Error { constructor(public code: AttachmentErrorCode, message: string) { super(message); this.name = 'AttachmentError'; } }
-/** Child JS heap is capped; this is not a total-native-memory or OS sandbox. */
+/** Compiled workers use 128 MiB; source workers allow 256 MiB for the TS loader. Neither is a total-native-memory or OS sandbox. */
 export class AttachmentExtractor {
   private children = new Set<ChildProcess>();
   private pending = new Set<Promise<unknown>>();
@@ -14,7 +14,7 @@ export class AttachmentExtractor {
     if (!bytes.length || bytes.length > ATTACHMENT_LIMITS.bytes) return Promise.reject(new AttachmentError('limit', 'Attachment must be between 1 byte and 4 MiB'));
     const promise = new Promise<AttachmentParseResult>((resolve, reject) => {
       const source = import.meta.url.endsWith('.ts');
-      const child = fork(fileURLToPath(new URL(source ? './attachment-worker.ts' : './attachment-worker.js', import.meta.url)), [], { execArgv: ['--max-old-space-size=128', ...(source ? ['--import', 'tsx'] : [])], serialization: 'advanced', stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true, env: { SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP } });
+      const child = fork(fileURLToPath(new URL(source ? './attachment-worker.ts' : './attachment-worker.js', import.meta.url)), [], { execArgv: [`--max-old-space-size=${source ? 256 : 128}`, ...(source ? ['--import', 'tsx'] : [])], serialization: 'advanced', stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true, env: { SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP } });
       this.children.add(child);
       let outcome: { error?: Error; value?: AttachmentParseResult } | undefined;
       let delivered = false;

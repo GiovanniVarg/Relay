@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { createCanvas } from '@napi-rs/canvas';
 import { AttachmentExtractor } from '../server/attachment-extraction.js';
@@ -10,6 +14,24 @@ test('actual TXT/PDF/DOCX parsers return bounded text and immutable parser prove
  const document = await parse(docx(), DOCX_MIME); assert.match(document.text!, /Actual DOCX source text/); assert.equal(document.version, '1.13.0');
  const parsed = await parse(pdf(), 'application/pdf'); assert.match(parsed.text!, /Actual PDF source text/); assert.equal(parsed.pages, 1); assert.equal(parsed.version, '6.4.299');
 });
+test('source PDF worker retains bounded output under the installed private Node runtime', { timeout: 60000 }, async () => {
+ const node = process.env.RELAY_TEST_PRIVATE_NODE || process.execPath;
+ const extractor = pathToFileURL(resolve('server/attachment-extraction.ts')).href;
+ const fixtures = pathToFileURL(resolve('tests/fixtures/attachment-inputs.ts')).href;
+ const code = `const { AttachmentExtractor } = await import(${JSON.stringify(extractor)});
+const { pdf } = await import(${JSON.stringify(fixtures)});
+const parser = new AttachmentExtractor();
+try {
+ const result = await parser.parse(pdf('x'.repeat(100000), {width:1000000}), 'application/pdf');
+ console.log(JSON.stringify({parser:result.parser,version:result.version,pages:result.pages,textCharacters:result.text.length,truncated:result.truncated}));
+} finally { await parser.close(); }`;
+ const { stdout } = await promisify(execFile)(node, ['--import', 'tsx', '--input-type=module', '--eval', code], {
+  cwd:resolve('.'), windowsHide:true, timeout:55000, maxBuffer:1024*1024,
+  env:{SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,TMP:process.env.TMP},
+ });
+ assert.deepEqual(JSON.parse(stdout), {parser:'pdfjs-dist',version:'6.4.299',pages:1,textCharacters:ATTACHMENT_LIMITS.textCharacters,truncated:true});
+});
+
 test('actual raster decoder validates PNG JPEG WebP and rejects corrupt bytes/pixel bombs', async () => {
  const canvas = createCanvas(2, 3); for (const [mime, bytes] of [['image/png', canvas.toBuffer('image/png')], ['image/jpeg', canvas.toBuffer('image/jpeg')], ['image/webp', canvas.toBuffer('image/webp')]] as const) { const result = await parse(bytes, mime); assert.equal(result.width, 2); assert.equal(result.height, 3); }
  const corrupt = png(); corrupt[corrupt.length - 5] ^= 1; await assert.rejects(parse(corrupt, 'image/png'), /checksum/);
