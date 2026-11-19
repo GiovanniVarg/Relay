@@ -2,7 +2,7 @@ name: Windows beta installer
 
 on:
   push:
-    tags: ['v*-beta']
+    tags: ['v*-beta', 'diag-v*-beta-*']
   workflow_dispatch:
     inputs:
       tag:
@@ -50,7 +50,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:RELAY_EVENT -ceq 'workflow_dispatch') { $tag = $env:RELAY_INPUT_TAG; $mode = $env:RELAY_INPUT_MODE }
-          elseif ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_EVENT_REF.StartsWith('refs/tags/', [StringComparison]::Ordinal)) { $tag = $env:RELAY_EVENT_TAG; $mode = 'release' }
+          elseif ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_EVENT_REF -ceq ('refs/tags/' + $env:RELAY_EVENT_TAG)) {
+            if ($env:RELAY_EVENT_TAG -cmatch '\Adiag-(v[0-9]+\.[0-9]+\.[0-9]+-beta)-([1-9][0-9]*)\z') { $tag = $Matches[1]; $mode = 'diagnostics' }
+            else { $tag = $env:RELAY_EVENT_TAG; $mode = 'release' }
+          }
           else { throw 'This workflow builds explicit beta tags only.' }
           if ($tag -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Choose an existing tag such as v0.11.0-beta; branches and other refs are refused.' }
           if ($mode -cnotin @('release', 'diagnostics')) { throw 'Choose release or diagnostics mode.' }
@@ -117,6 +120,7 @@ jobs:
         env:
           RELAY_RELEASE_TAG: ${{ steps.request.outputs.tag }}
           RELAY_EVENT: ${{ github.event_name }}
+          RELAY_MODE: ${{ steps.request.outputs.mode }}
           RELAY_PUSH_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -128,7 +132,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Could not identify the checked release commit.' }
           $tagCommit = (git rev-parse --verify ('refs/tags/' + $env:RELAY_RELEASE_TAG + '^{commit}')).Trim()
           if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $head) { throw 'Checkout does not match the exact requested tag.' }
-          if ($env:RELAY_EVENT -ceq 'push' -and $head -cne $env:RELAY_PUSH_SHA) { throw 'Checkout does not match the tagged push commit.' }
+          if ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_MODE -ceq 'release' -and $head -cne $env:RELAY_PUSH_SHA) { throw 'Checkout does not match the tagged push commit.' }
           git diff --quiet
           if ($LASTEXITCODE -ne 0) { throw 'Release checkout is modified.' }
           git diff --cached --quiet
