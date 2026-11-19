@@ -3,45 +3,79 @@ name: Windows beta installer
 on:
   push:
     tags: ['v*-beta']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing reviewed beta tag to build (never a branch)'
+        required: true
+        default: 'v0.11.0-beta'
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: windows-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build:
-    if: github.repository == 'GiovanniVarg/Relay'
+    if: github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: windows-2025
     timeout-minutes: 60
+    outputs:
+      release_tag: ${{ steps.request.outputs.tag }}
+      release_sha: ${{ steps.identity.outputs.sha }}
     defaults:
       run:
         shell: pwsh
     steps:
+      - name: Resolve only an existing beta tag request
+        id: request
+        env:
+          RELAY_EVENT: ${{ github.event_name }}
+          RELAY_INPUT_TAG: ${{ inputs.tag }}
+          RELAY_EVENT_REF: ${{ github.ref }}
+          RELAY_EVENT_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELAY_EVENT -ceq 'workflow_dispatch') { $tag = $env:RELAY_INPUT_TAG }
+          elseif ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_EVENT_REF.StartsWith('refs/tags/', [StringComparison]::Ordinal)) { $tag = $env:RELAY_EVENT_TAG }
+          else { throw 'This workflow builds explicit beta tags only.' }
+          if ($tag -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Choose an existing tag such as v0.11.0-beta; branches and other refs are refused.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('tag=' + $tag + "`n"), [Text.UTF8Encoding]::new($false))
       - name: Check out the reviewed release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # Official v4 ref verified before pinning
         with:
           persist-credentials: false
+          ref: refs/tags/${{ steps.request.outputs.tag }}
       - name: Set up the pinned build Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.23.5'
           check-latest: false
       - name: Validate release identity
+        id: identity
         env:
-          RELAY_RELEASE_TAG: ${{ github.ref_name }}
-          RELAY_RELEASE_SHA: ${{ github.sha }}
+          RELAY_RELEASE_TAG: ${{ steps.request.outputs.tag }}
+          RELAY_EVENT: ${{ github.event_name }}
+          RELAY_PUSH_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
           $package = Get-Content package.json -Raw | ConvertFrom-Json
           if ($package.name -cne 'relay-agent-harness' -or $package.version -notmatch '^\d+\.\d+\.\d+$' -or $env:RELAY_RELEASE_TAG -cne ('v' + $package.version + '-beta')) { throw 'Tag and Relay package version must match exactly.' }
           $remote = (git remote get-url origin).Trim().TrimEnd('/') -replace '\.git$', ''
           if ($remote -cne 'https://github.com/GiovanniVarg/Relay') { throw 'Release must build the official public repository.' }
-          if ((git rev-parse HEAD).Trim() -cne $env:RELAY_RELEASE_SHA) { throw 'Checkout does not match the tagged release commit.' }
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Could not identify the checked release commit.' }
+          $tagCommit = (git rev-parse --verify ('refs/tags/' + $env:RELAY_RELEASE_TAG + '^{commit}')).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $head) { throw 'Checkout does not match the exact requested tag.' }
+          if ($env:RELAY_EVENT -ceq 'push' -and $head -cne $env:RELAY_PUSH_SHA) { throw 'Checkout does not match the tagged push commit.' }
           git diff --quiet
           if ($LASTEXITCODE -ne 0) { throw 'Release checkout is modified.' }
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Release index is modified.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('sha=' + $head + "`n"), [Text.UTF8Encoding]::new($false))
       - name: Install locked build dependencies without lifecycle scripts
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
@@ -84,7 +118,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.repository == 'GiovanniVarg/Relay'
+    if: github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: windows-2025
     timeout-minutes: 15
     permissions:
@@ -102,12 +136,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELAY_RELEASE_TAG: ${{ github.ref_name }}
-          RELAY_RELEASE_SHA: ${{ github.sha }}
+          RELAY_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          RELAY_RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RELAY_RELEASE_TAG -notmatch '^v(\d+\.\d+\.\d+)-beta$') { throw 'Invalid release tag.' }
+          if ($env:RELAY_RELEASE_TAG -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Invalid release tag.' }
           $version = $Matches[1]
+          if ($env:RELAY_RELEASE_SHA -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Missing validated release commit.' }
+          $tagObject = gh api ('repos/' + $env:GH_REPO + '/git/ref/tags/' + $env:RELAY_RELEASE_TAG) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $tagObject.ref -cne ('refs/tags/' + $env:RELAY_RELEASE_TAG)) { throw 'The requested release tag no longer resolves exactly.' }
+          $object = $tagObject.object
+          for ($depth = 0; $object.type -ceq 'tag' -and $depth -lt 5; $depth++) {
+            if ($object.sha -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Invalid annotated tag object.' }
+            $annotated = gh api ('repos/' + $env:GH_REPO + '/git/tags/' + $object.sha) | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Could not verify the annotated release tag.' }
+            $object = $annotated.object
+          }
+          if ($object.type -cne 'commit' -or $object.sha -cne $env:RELAY_RELEASE_SHA) { throw 'Release tag changed or does not match the checked build; publication is refused.' }
           $exe = 'Relay-Setup-' + $version + '-beta-windows-x64.exe'
           $payloadNames = @($exe, 'components.json', 'THIRD_PARTY_NOTICES.txt')
           $names = @($payloadNames) + @('SHA256SUMS.txt')
