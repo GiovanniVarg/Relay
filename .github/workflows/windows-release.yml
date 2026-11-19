@@ -13,11 +13,11 @@ on:
       mode:
         description: 'Release runs every check and publishes; diagnostics only probes synthetic CI fixtures'
         required: true
-        default: release
+        default: diagnostics
         type: choice
         options:
-          - release
           - diagnostics
+          - release
 
 permissions:
   contents: read
