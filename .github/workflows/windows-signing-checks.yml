@@ -27,22 +27,52 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Set up the pinned official Node control binary
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22.23.5'
-          check-latest: false
-      - name: Verify the official binary identity before using the control
+      - name: Download the exact official Node ZIP control
         id: control
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (Get-Command node.exe -CommandType Application).Source
-          $expected = '247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a'
-          if ((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'The official Node control binary does not match the pinned SHA256.' }
+          if (-not [IO.Path]::IsPathRooted($env:RUNNER_TEMP) -or $env:RUNNER_TEMP -match '[\r\n]') { throw 'Invalid runner temporary root.' }
+          $folder = [IO.Path]::Combine([IO.Path]::GetFullPath($env:RUNNER_TEMP), ('relay-node-control-' + [Guid]::NewGuid().ToString('N')))
+          if ([IO.Directory]::Exists($folder) -or [IO.File]::Exists($folder)) { throw 'Use a fresh control directory; existing files are never reused.' }
+          $null = [IO.Directory]::CreateDirectory($folder)
+          $owner = [IO.File]::Open([IO.Path]::Combine($folder, '.relay-control-owner'), [IO.FileMode]::CreateNew); $owner.Dispose()
+          $archive = [IO.Path]::Combine($folder, 'node.zip'); $node = [IO.Path]::Combine($folder, 'node.exe')
+          $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false
+          $client = [Net.Http.HttpClient]::new($handler); $deadline = [Threading.CancellationTokenSource]::new(60000)
+          $response = $null; $inputStream = $null; $outputStream = $null
+          try {
+            $response = $client.GetAsync('https://nodejs.org/dist/v22.23.5/node-v22.23.5-win-x64.zip', [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $deadline.Token).GetAwaiter().GetResult()
+            if ($response.StatusCode -ne [Net.HttpStatusCode]::OK -or $response.Content.Headers.ContentLength -gt 64MB) { throw 'Unexpected official ZIP response or download size.' }
+            $inputStream = $response.Content.ReadAsStreamAsync($deadline.Token).GetAwaiter().GetResult()
+            $outputStream = [IO.File]::Open($archive, [IO.FileMode]::CreateNew); $buffer = [byte[]]::new(65536); $total = 0L
+            while (($count = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $deadline.Token).GetAwaiter().GetResult()) -gt 0) {
+              $total += $count; if ($total -gt 64MB) { throw 'Official ZIP download exceeded 64 MiB.' }
+              $outputStream.Write($buffer, 0, $count)
+            }
+            if ($total -lt 1) { throw 'Official ZIP download was empty.' }
+          } finally {
+            if ($outputStream) { $outputStream.Dispose() }; if ($inputStream) { $inputStream.Dispose() }; if ($response) { $response.Dispose() }; $deadline.Dispose(); $client.Dispose(); $handler.Dispose()
+          }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3') { throw 'Official ZIP SHA256 mismatch.' }
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $entries = @($zip.Entries | Where-Object { $_.FullName -ceq 'node-v22.23.5-win-x64/node.exe' })
+            if ($entries.Count -ne 1 -or $entries[0].Length -lt 1 -or $entries[0].Length -gt 128MB) { throw 'Expected exactly one bounded official node.exe entry.' }
+            $entryStream = $null; $nodeStream = $null; $copied = 0L
+            try {
+              $entryStream = $entries[0].Open(); $nodeStream = [IO.File]::Open($node, [IO.FileMode]::CreateNew)
+              while (($count = $entryStream.Read($buffer, 0, $buffer.Length)) -gt 0) { $copied += $count; if ($copied -gt 128MB) { throw 'Official node.exe entry exceeded its bound.' }; $nodeStream.Write($buffer, 0, $count) }
+              if ($copied -ne $entries[0].Length) { throw 'Official node.exe entry length mismatch.' }
+            } finally { if ($entryStream) { $entryStream.Dispose() }; if ($nodeStream) { $nodeStream.Dispose() } }
+          } finally { $zip.Dispose() }
+          if ((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne '247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a') { throw 'Official node.exe SHA256 mismatch.' }
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('path=' + $node + "`n"), [Text.UTF8Encoding]::new($false))
       - name: Run only built-in signing policy tests
+        env:
+          RELAY_NODE_CONTROL_PATH: ${{ steps.control.outputs.path }}
         run: |
-          node --experimental-strip-types --test tests/installer-signing.test.ts
+          $ErrorActionPreference = 'Stop'
+          & $env:RELAY_NODE_CONTROL_PATH --experimental-strip-types --test tests/installer-signing.test.ts
           if ($LASTEXITCODE -ne 0) { throw 'Signing policy regression tests failed.' }
       - name: Verify the known vendor signature using the actual Windows SDK
         env:
