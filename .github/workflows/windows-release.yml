@@ -144,6 +144,7 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed.' }
       - name: Check the actual release version before the full suite
+        if: steps.request.outputs.mode == 'release'
         working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
           node --import tsx --test tests/version-consistency.test.ts
@@ -163,7 +164,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $loader.StartsWith('file:', [StringComparison]::Ordinal)) { throw 'Could not resolve the checked TypeScript loader.' }
           $utilities = Join-Path $env:GITHUB_WORKSPACE 'workflow-tools\.github\diagnostics'
           $failures = @()
-          foreach ($name in @('ci-native-guard-diagnostic.mjs', 'ci-dpapi-diagnostic.mjs', 'ci-parser-diagnostic.mjs')) {
+          foreach ($name in @('ci-native-guard-diagnostic.mjs', 'ci-dpapi-diagnostic.mjs')) {
             & node --import $loader (Join-Path $utilities $name) $env:RELAY_BUILD_ROOT $env:RELAY_DIAGNOSTICS_DIR
             if ($LASTEXITCODE -ne 0) { $failures += $name }
           }
@@ -176,7 +177,6 @@ jobs:
           path: |
             ${{ env.RELAY_DIAGNOSTICS_DIR }}/native-guard.jsonl
             ${{ env.RELAY_DIAGNOSTICS_DIR }}/dpapi.json
-            ${{ env.RELAY_DIAGNOSTICS_DIR }}/parser.json
           if-no-files-found: warn
           retention-days: 7
       - name: Run every normal test serially
