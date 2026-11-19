@@ -10,6 +10,14 @@ on:
         required: true
         default: 'v0.11.0-beta'
         type: string
+      mode:
+        description: 'Release runs every check and publishes; diagnostics only probes synthetic CI fixtures'
+        required: true
+        default: release
+        type: choice
+        options:
+          - release
+          - diagnostics
 
 permissions:
   contents: read
@@ -26,6 +34,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.request.outputs.tag }}
       release_sha: ${{ steps.identity.outputs.sha }}
+      release_mode: ${{ steps.request.outputs.mode }}
     defaults:
       run:
         shell: pwsh
@@ -35,27 +44,76 @@ jobs:
         env:
           RELAY_EVENT: ${{ github.event_name }}
           RELAY_INPUT_TAG: ${{ inputs.tag }}
+          RELAY_INPUT_MODE: ${{ inputs.mode }}
           RELAY_EVENT_REF: ${{ github.ref }}
           RELAY_EVENT_TAG: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RELAY_EVENT -ceq 'workflow_dispatch') { $tag = $env:RELAY_INPUT_TAG }
-          elseif ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_EVENT_REF.StartsWith('refs/tags/', [StringComparison]::Ordinal)) { $tag = $env:RELAY_EVENT_TAG }
+          if ($env:RELAY_EVENT -ceq 'workflow_dispatch') { $tag = $env:RELAY_INPUT_TAG; $mode = $env:RELAY_INPUT_MODE }
+          elseif ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_EVENT_REF.StartsWith('refs/tags/', [StringComparison]::Ordinal)) { $tag = $env:RELAY_EVENT_TAG; $mode = 'release' }
           else { throw 'This workflow builds explicit beta tags only.' }
           if ($tag -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Choose an existing tag such as v0.11.0-beta; branches and other refs are refused.' }
+          if ($mode -cnotin @('release', 'diagnostics')) { throw 'Choose release or diagnostics mode.' }
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('tag=' + $tag + "`n"), [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('mode=' + $mode + "`n"), [Text.UTF8Encoding]::new($false))
+      - name: Check out diagnostics from this workflow revision
+        if: steps.request.outputs.mode == 'diagnostics'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          path: workflow-tools
+          sparse-checkout: .github/diagnostics
       - name: Check out the reviewed release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # Official v4 ref verified before pinning
         with:
           persist-credentials: false
           ref: refs/tags/${{ steps.request.outputs.tag }}
+          path: release-checkout
       - name: Set up the pinned build Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.23.5'
           check-latest: false
+      - name: Prepare a clean canonical home workspace and temporary directory
+        env:
+          RELAY_RELEASE_TAG: ${{ steps.request.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $homeDirectory = [IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile')).TrimEnd('\', '/')
+          if (-not [IO.Path]::IsPathRooted($homeDirectory) -or $env:GITHUB_RUN_ID -cnotmatch '\A[0-9]+\z' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '\A[0-9]+\z') { throw 'Invalid runner home or run identity.' }
+          function Assert-NoLinks([string]$path) {
+            $cursor = [IO.Path]::GetFullPath($path)
+            while ($cursor) {
+              if (Test-Path -LiteralPath $cursor) { if ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked CI workspaces are refused.' } }
+              $parent = [IO.Path]::GetDirectoryName($cursor)
+              if ($parent -eq $cursor) { break }
+              $cursor = $parent
+            }
+          }
+          $jobRoot = Join-Path $homeDirectory ('.relay-ci\' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT)
+          Assert-NoLinks $jobRoot
+          if (-not $jobRoot.StartsWith($homeDirectory + '\', [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $jobRoot)) { throw 'Use a fresh home-scoped CI workspace; no existing files are removed.' }
+          $buildRoot = Join-Path $jobRoot 'source'
+          $temporary = Join-Path $jobRoot 'temp'
+          $diagnostics = Join-Path $jobRoot 'diagnostics'
+          $null = [IO.Directory]::CreateDirectory($temporary)
+          $null = [IO.Directory]::CreateDirectory($diagnostics)
+          $env:TEMP = $temporary; $env:TMP = $temporary
+          $checkoutRoot = Join-Path $env:GITHUB_WORKSPACE 'release-checkout'
+          git clone --no-local --no-hardlinks --no-checkout -- $checkoutRoot $buildRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create an independent exact-tag source clone.' }
+          git -C $buildRoot remote set-url origin https://github.com/GiovanniVarg/Relay
+          if ($LASTEXITCODE -ne 0) { throw 'Could not bind the official public source origin.' }
+          git -C $buildRoot checkout --detach ('refs/tags/' + $env:RELAY_RELEASE_TAG)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact requested beta tag.' }
+          foreach ($pair in @{ RELAY_BUILD_ROOT = $buildRoot; RELAY_DIAGNOSTICS_DIR = $diagnostics; TEMP = $temporary; TMP = $temporary }.GetEnumerator()) {
+            if ($pair.Value -match '[\r\n]') { throw 'Invalid CI environment path.' }
+            [IO.File]::AppendAllText($env:GITHUB_ENV, ($pair.Key + '=' + $pair.Value + "`n"), [Text.UTF8Encoding]::new($false))
+          }
       - name: Validate release identity
         id: identity
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
         env:
           RELAY_RELEASE_TAG: ${{ steps.request.outputs.tag }}
           RELAY_EVENT: ${{ github.event_name }}
@@ -77,10 +135,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Release index is modified.' }
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('sha=' + $head + "`n"), [Text.UTF8Encoding]::new($false))
       - name: Install locked build dependencies without lifecycle scripts
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed.' }
       - name: Check the actual release version before the full suite
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
           node --import tsx --test tests/version-consistency.test.ts
           if ($LASTEXITCODE -ne 0) { throw 'Release version preflight failed.' }
@@ -88,7 +148,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Type checking failed.' }
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+      - name: Run bounded synthetic native and vault diagnostics
+        if: steps.request.outputs.mode == 'diagnostics'
+        timeout-minutes: 8
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $loader = (node --input-type=module -e "console.log(import.meta.resolve('tsx'))").Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $loader.StartsWith('file:', [StringComparison]::Ordinal)) { throw 'Could not resolve the checked TypeScript loader.' }
+          $utilities = Join-Path $env:GITHUB_WORKSPACE 'workflow-tools\.github\diagnostics'
+          $failures = @()
+          foreach ($name in @('ci-native-guard-diagnostic.mjs', 'ci-dpapi-diagnostic.mjs', 'ci-parser-diagnostic.mjs')) {
+            & node --import $loader (Join-Path $utilities $name) $env:RELAY_BUILD_ROOT $env:RELAY_DIAGNOSTICS_DIR
+            if ($LASTEXITCODE -ne 0) { $failures += $name }
+          }
+          if ($failures.Count) { throw ('Synthetic diagnostics failed: ' + ($failures -join ', ') + '. Inspect their bounded receipts; this is not a release pass.') }
+      - name: Retain synthetic diagnostic receipts only
+        if: always() && steps.request.outputs.mode == 'diagnostics'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-ci-diagnostics
+          path: |
+            ${{ env.RELAY_DIAGNOSTICS_DIR }}/native-guard.jsonl
+            ${{ env.RELAY_DIAGNOSTICS_DIR }}/dpapi.json
+            ${{ env.RELAY_DIAGNOSTICS_DIR }}/parser.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Run every normal test serially
+        if: steps.request.outputs.mode == 'release'
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
           $env:RELAY_TEST_PRIVATE_NODE = (Get-Command node.exe).Source
           $tests = @(Get-ChildItem tests -File -Filter '*.test.ts' | Sort-Object Name | ForEach-Object { Join-Path 'tests' $_.Name })
@@ -96,14 +185,17 @@ jobs:
           node node_modules/tsx/dist/cli.mjs --test --test-concurrency=1 @tests
           if ($LASTEXITCODE -ne 0) { throw 'The normal test suite failed.' }
       - name: Build the clean online installer
+        if: steps.request.outputs.mode == 'release'
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
-          & scripts/installer/build-windows.ps1 -SourceRoot $env:GITHUB_WORKSPACE -OutputDirectory (Join-Path $env:RUNNER_TEMP 'relay-release')
+          & scripts/installer/build-windows.ps1 -SourceRoot $env:RELAY_BUILD_ROOT -OutputDirectory (Join-Path $env:RUNNER_TEMP 'relay-release')
           if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $names = @(('Relay-Setup-' + $version + '-beta-windows-x64.exe'), 'SHA256SUMS.txt', 'components.json', 'THIRD_PARTY_NOTICES.txt')
           $files = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'relay-release') -File)
           if ($files.Count -ne 4 -or @($files | Where-Object { $_.Name -notin $names }).Count) { throw 'Only installer, checksum, components and notices may be uploaded.' }
       - name: Retain only the checked release assets
+        if: steps.request.outputs.mode == 'release'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-beta-installer
@@ -118,7 +210,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: needs.build.outputs.release_mode == 'release' && github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: windows-2025
     timeout-minutes: 15
     permissions:
