@@ -35,7 +35,7 @@ jobs:
       release_tag: ${{ steps.request.outputs.tag }}
       release_sha: ${{ steps.identity.outputs.sha }}
       release_mode: ${{ steps.request.outputs.mode }}
-      native_integration_verified: ${{ steps.native_integration.outputs.verified }}
+      release_version: ${{ steps.identity.outputs.version }}
     defaults:
       run:
         shell: pwsh
@@ -60,6 +60,20 @@ jobs:
           if ($mode -cnotin @('release', 'diagnostics')) { throw 'Choose release or diagnostics mode.' }
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('tag=' + $tag + "`n"), [Text.UTF8Encoding]::new($false))
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('mode=' + $mode + "`n"), [Text.UTF8Encoding]::new($false))
+      - name: Check required signing configuration before building a release
+        if: steps.request.outputs.mode == 'release'
+        env:
+          RELAY_AZURE_SIGNING_ENDPOINT: ${{ vars.RELAY_AZURE_SIGNING_ENDPOINT }}
+          RELAY_AZURE_SIGNING_ACCOUNT: ${{ vars.RELAY_AZURE_SIGNING_ACCOUNT }}
+          RELAY_AZURE_SIGNING_PROFILE: ${{ vars.RELAY_AZURE_SIGNING_PROFILE }}
+          RELAY_AZURE_SIGNING_EXPECTED_SUBJECT: ${{ vars.RELAY_AZURE_SIGNING_EXPECTED_SUBJECT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('RELAY_AZURE_SIGNING_ENDPOINT', 'RELAY_AZURE_SIGNING_ACCOUNT', 'RELAY_AZURE_SIGNING_PROFILE', 'RELAY_AZURE_SIGNING_EXPECTED_SUBJECT')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value) -or $value -cne $value.Trim() -or $value.Length -gt 2048 -or $value -match '[\x00\r\n]') { throw ('Configure repository variable ' + $name + ' as described in docs/windows-signing.md before requesting a release.') }
+          }
+          if ($env:RELAY_AZURE_SIGNING_ENDPOINT -cnotmatch '\Ahttps://[a-z0-9]+\.codesigning\.azure\.net/?\z') { throw 'Use the regional HTTPS Azure Artifact Signing endpoint.' }
       - name: Check out diagnostics from this workflow revision
         if: steps.request.outputs.mode == 'diagnostics'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -139,6 +153,7 @@ jobs:
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) { throw 'Release index is modified.' }
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('sha=' + $head + "`n"), [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('version=' + $package.version + "`n"), [Text.UTF8Encoding]::new($false))
       - name: Install locked build dependencies without lifecycle scripts
         working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
@@ -192,16 +207,279 @@ jobs:
       - name: Build the clean online installer
         if: steps.request.outputs.mode == 'release'
         working-directory: ${{ env.RELAY_BUILD_ROOT }}
+        env:
+          RELAY_BUILD_SOURCE_SHA: ${{ steps.identity.outputs.sha }}
         run: |
-          & scripts/installer/build-windows.ps1 -SourceRoot $env:RELAY_BUILD_ROOT -OutputDirectory (Join-Path $env:RUNNER_TEMP 'relay-release')
-          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+          $ErrorActionPreference = 'Stop'
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $buildOutput = @(& scripts/installer/build-windows.ps1 -SourceRoot $env:RELAY_BUILD_ROOT -OutputDirectory (Join-Path $env:RUNNER_TEMP 'relay-release'))
+          if ($buildOutput.Count -eq 0) { throw 'Installer build returned no result.' }
+          $buildProof = $buildOutput[-1] | ConvertFrom-Json
+          if ($buildProof.unsigned -isnot [bool] -or $buildProof.unsigned -ne $true -or $buildProof.version -cne $version -or $buildProof.sourceCommit -cne $env:RELAY_BUILD_SOURCE_SHA -or $buildProof.sha256 -cnotmatch '\A[a-f0-9]{64}\z') { throw 'Installer build identity was not established.' }
+          $builtExe = Join-Path (Join-Path $env:RUNNER_TEMP 'relay-release') ('Relay-Setup-' + $version + '-beta-windows-x64.exe')
+          if ($buildProof.installer -cne $builtExe -or (Get-FileHash -LiteralPath $builtExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $buildProof.sha256) { throw 'Installer build result did not bind its exact bytes.' }
           $names = @(('Relay-Setup-' + $version + '-beta-windows-x64.exe'), 'SHA256SUMS.txt', 'components.json', 'THIRD_PARTY_NOTICES.txt')
           $files = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'relay-release') -File)
           if ($files.Count -ne 4 -or @($files | Where-Object { $_.Name -notin $names }).Count) { throw 'Only installer, checksum, components and notices may be uploaded.' }
+      - name: Retain only unsigned intermediate build assets
+        if: steps.request.outputs.mode == 'release'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-unsigned-installer
+          path: |
+            ${{ runner.temp }}/relay-release/Relay-Setup-*-beta-windows-x64.exe
+            ${{ runner.temp }}/relay-release/SHA256SUMS.txt
+            ${{ runner.temp }}/relay-release/components.json
+            ${{ runner.temp }}/relay-release/THIRD_PARTY_NOTICES.txt
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+
+  sign:
+    needs: build
+    if: needs.build.outputs.release_mode == 'release'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      signature_verified: ${{ steps.signed.outputs.verified }}
+      artifact_sha256: ${{ steps.signed.outputs.sha256 }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      AZURE_CORE_OUTPUT: none
+      RELAY_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+      RELAY_RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+      RELAY_RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+      RELAY_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      RELAY_AZURE_SIGNING_EXPECTED_SUBJECT: ${{ vars.RELAY_AZURE_SIGNING_EXPECTED_SUBJECT }}
+    steps:
+      - name: Check out only trusted signing utilities from this workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          path: trusted-workflow-tools
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/installer/verify-authenticode.ps1
+            scripts/installer/finalize-signed-release.ps1
+      - name: Download only this run's unsigned intermediate assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-unsigned-installer
+          path: unsigned
+      - name: Verify trusted utilities, exact tag and unsigned asset provenance
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolHead = (git -C trusted-workflow-tools rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $toolHead -cne $env:RELAY_WORKFLOW_SHA) { throw 'Signing utilities do not match this trusted workflow revision.' }
+          if ($env:RELAY_RELEASE_TAG -cne ('v' + $env:RELAY_RELEASE_VERSION + '-beta') -or $env:RELAY_RELEASE_VERSION -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z' -or $env:RELAY_RELEASE_SHA -cnotmatch '\A[a-f0-9]{40}\z') { throw 'Invalid checked release identity.' }
+          $ref = 'refs/tags/' + $env:RELAY_RELEASE_TAG
+          $rows = @(git ls-remote --tags https://github.com/GiovanniVarg/Relay $ref ($ref + '^{}'))
+          if ($LASTEXITCODE -ne 0) { throw 'Could not recheck the canonical source tag before signing.' }
+          $plain = @($rows | Where-Object { $_.EndsWith("`t" + $ref, [StringComparison]::Ordinal) })
+          $peeled = @($rows | Where-Object { $_.EndsWith("`t" + $ref + '^{}', [StringComparison]::Ordinal) })
+          if ($plain.Count -ne 1 -or $peeled.Count -gt 1) { throw 'The source tag is missing or ambiguous.' }
+          $resolved = if ($peeled.Count) { ($peeled[0] -split "`t")[0] } else { ($plain[0] -split "`t")[0] }
+          if ($resolved -cne $env:RELAY_RELEASE_SHA) { throw 'The source tag moved; signing is refused.' }
+          $releaseProof = & ./trusted-workflow-tools/scripts/installer/finalize-signed-release.ps1 -ReleaseDirectory (Join-Path $env:GITHUB_WORKSPACE 'unsigned') -Version $env:RELAY_RELEASE_VERSION -SourceCommit $env:RELAY_RELEASE_SHA -ExpectedSubject $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -ValidateUnsigned | ConvertFrom-Json
+          if ($releaseProof.verified -isnot [bool] -or $releaseProof.verified -ne $true -or $releaseProof.signed -isnot [bool] -or $releaseProof.signed -ne $false -or $releaseProof.readOnly -isnot [bool] -or $releaseProof.readOnly -ne $true -or $releaseProof.version -cne $env:RELAY_RELEASE_VERSION -or $releaseProof.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $releaseProof.artifactSha256 -cnotmatch '\A[a-f0-9]{64}\z') { throw 'Unsigned asset provenance could not be established.' }
+      - name: Check protected environment login configuration
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          foreach ($name in @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID')) {
+            $parsed = [Guid]::Empty
+            if (-not [Guid]::TryParse([Environment]::GetEnvironmentVariable($name), [ref]$parsed) -or $parsed -eq [Guid]::Empty) { throw ('Configure protected windows-signing environment secret ' + $name + '; no signing fallback is available.') }
+          }
+      - name: Obtain short-lived Azure credentials through protected OIDC
+        uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
+      - name: Sign only the checked Relay setup executable
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.RELAY_AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.RELAY_AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.RELAY_AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\unsigned\Relay-Setup-${{ needs.build.outputs.release_version }}-beta-windows-x64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          cache-dependencies: false
+          trace: false
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+      - name: Verify final signature and regenerate the signed metadata and checksums
+        id: signed
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseProof = & ./trusted-workflow-tools/scripts/installer/finalize-signed-release.ps1 -ReleaseDirectory (Join-Path $env:GITHUB_WORKSPACE 'unsigned') -Version $env:RELAY_RELEASE_VERSION -SourceCommit $env:RELAY_RELEASE_SHA -ExpectedSubject $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT | ConvertFrom-Json
+          if ($releaseProof.verified -isnot [bool] -or $releaseProof.verified -ne $true -or $releaseProof.signed -isnot [bool] -or $releaseProof.signed -ne $true -or $releaseProof.readOnly -isnot [bool] -or $releaseProof.readOnly -ne $false -or $releaseProof.version -cne $env:RELAY_RELEASE_VERSION -or $releaseProof.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $releaseProof.subject -cne $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -or $releaseProof.artifactSha256 -cnotmatch '\A[a-f0-9]{64}\z') { throw 'Final signed metadata verification failed.' }
+          $exe = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'unsigned') ('Relay-Setup-' + $env:RELAY_RELEASE_VERSION + '-beta-windows-x64.exe')
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne $releaseProof.artifactSha256) { throw 'Finalization did not bind the exact signed installer.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ("verified=true`nsha256=" + $hash + "`n"), [Text.UTF8Encoding]::new($false))
+      - name: Retain signed intermediate assets for independent testing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-signed-installer
+          path: |
+            unsigned/Relay-Setup-*-beta-windows-x64.exe
+            unsigned/SHA256SUMS.txt
+            unsigned/components.json
+            unsigned/THIRD_PARTY_NOTICES.txt
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+
+  verify:
+    needs: [build, sign]
+    if: needs.build.outputs.release_mode == 'release' && needs.sign.outputs.signature_verified == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    outputs:
+      native_integration_verified: ${{ steps.native_integration.outputs.verified }}
+      signature_verified: ${{ steps.signed.outputs.verified }}
+      artifact_sha256: ${{ steps.signed.outputs.sha256 }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELAY_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+      RELAY_RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+      RELAY_EXPECTED_SIGNED_SHA: ${{ needs.sign.outputs.artifact_sha256 }}
+      RELAY_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      RELAY_AZURE_SIGNING_EXPECTED_SUBJECT: ${{ vars.RELAY_AZURE_SIGNING_EXPECTED_SUBJECT }}
+    steps:
+      - name: Check out trusted signature utilities from this workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          path: trusted-workflow-tools
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/installer/verify-authenticode.ps1
+            scripts/installer/finalize-signed-release.ps1
+            scripts/installer/verify-ci-receipts.mjs
+      - name: Check out the reviewed release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # Official v4 ref verified before pinning
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ needs.build.outputs.release_tag }}
+          path: release-checkout
+      - name: Set up the pinned build Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.5'
+          check-latest: false
+      - name: Prepare a clean canonical home workspace and temporary directory
+        env:
+          RELAY_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $homeDirectory = [IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile')).TrimEnd('\', '/')
+          if (-not [IO.Path]::IsPathRooted($homeDirectory) -or $env:GITHUB_RUN_ID -cnotmatch '\A[0-9]+\z' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '\A[0-9]+\z') { throw 'Invalid runner home or run identity.' }
+          function Assert-NoLinks([string]$path) {
+            $cursor = [IO.Path]::GetFullPath($path)
+            while ($cursor) {
+              if (Test-Path -LiteralPath $cursor) { if ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked CI workspaces are refused.' } }
+              $parent = [IO.Path]::GetDirectoryName($cursor)
+              if ($parent -eq $cursor) { break }
+              $cursor = $parent
+            }
+          }
+          $jobRoot = Join-Path $homeDirectory ('.relay-ci\' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT + '-verify')
+          Assert-NoLinks $jobRoot
+          if (-not $jobRoot.StartsWith($homeDirectory + '\', [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $jobRoot)) { throw 'Use a fresh home-scoped CI workspace; no existing files are removed.' }
+          $buildRoot = Join-Path $jobRoot 'source'
+          $temporary = Join-Path $jobRoot 'temp'
+          $null = [IO.Directory]::CreateDirectory($temporary)
+          $env:TEMP = $temporary; $env:TMP = $temporary
+          $checkoutRoot = Join-Path $env:GITHUB_WORKSPACE 'release-checkout'
+          git clone --no-local --no-hardlinks --no-checkout -- $checkoutRoot $buildRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create an independent exact-tag source clone.' }
+          git -C $buildRoot remote set-url origin https://github.com/GiovanniVarg/Relay
+          if ($LASTEXITCODE -ne 0) { throw 'Could not bind the official public source origin.' }
+          git -C $buildRoot checkout --detach ('refs/tags/' + $env:RELAY_RELEASE_TAG)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact requested beta tag.' }
+          foreach ($pair in @{ RELAY_BUILD_ROOT = $buildRoot; TEMP = $temporary; TMP = $temporary }.GetEnumerator()) {
+            if ($pair.Value -match '[\r\n]') { throw 'Invalid CI environment path.' }
+            [IO.File]::AppendAllText($env:GITHUB_ENV, ($pair.Key + '=' + $pair.Value + "`n"), [Text.UTF8Encoding]::new($false))
+          }
+      - name: Validate release identity
+        id: identity
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
+        env:
+          RELAY_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          RELAY_EVENT: ${{ github.event_name }}
+          RELAY_MODE: release
+          RELAY_PUSH_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.name -cne 'relay-agent-harness' -or $package.version -notmatch '^\d+\.\d+\.\d+$' -or $env:RELAY_RELEASE_TAG -cne ('v' + $package.version + '-beta')) { throw 'Tag and Relay package version must match exactly.' }
+          $remote = (git remote get-url origin).Trim().TrimEnd('/') -replace '\.git$', ''
+          if ($remote -cne 'https://github.com/GiovanniVarg/Relay') { throw 'Release must build the official public repository.' }
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Could not identify the checked release commit.' }
+          $tagCommit = (git rev-parse --verify ('refs/tags/' + $env:RELAY_RELEASE_TAG + '^{commit}')).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $head) { throw 'Checkout does not match the exact requested tag.' }
+          if ($head -cne $env:RELAY_RELEASE_SHA) { throw 'Verification checkout differs from the checked build source.' }
+          if ($env:RELAY_EVENT -ceq 'push' -and $env:RELAY_MODE -ceq 'release' -and $head -cne $env:RELAY_PUSH_SHA) { throw 'Checkout does not match the tagged push commit.' }
+          git diff --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Release checkout is modified.' }
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Release index is modified.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('sha=' + $head + "`n"), [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('version=' + $package.version + "`n"), [Text.UTF8Encoding]::new($false))
+      - name: Install locked build dependencies without lifecycle scripts
+        working-directory: ${{ env.RELAY_BUILD_ROOT }}
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed.' }
+      - name: Download only this run's signed candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-signed-installer
+          path: ${{ runner.temp }}/relay-release
+      - name: Verify signature and signed SHA before native execution
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolHead = (git -C trusted-workflow-tools rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $toolHead -cne $env:RELAY_WORKFLOW_SHA) { throw 'Signature utilities differ from the trusted workflow revision.' }
+          if ($env:RELAY_RELEASE_TAG -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Missing signed release tag.' }
+          $version = $Matches[1]
+          if ($env:RELAY_EXPECTED_SIGNED_SHA -cnotmatch '\A[a-f0-9]{64}\z') { throw 'Missing signed release digest.' }
+          $release = Join-Path $env:RUNNER_TEMP 'relay-release'
+          $releaseProof = & ./trusted-workflow-tools/scripts/installer/finalize-signed-release.ps1 -ReleaseDirectory $release -Version $version -SourceCommit $env:RELAY_RELEASE_SHA -ExpectedSubject $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -VerifyOnly | ConvertFrom-Json
+          if ($releaseProof.verified -isnot [bool] -or $releaseProof.verified -ne $true -or $releaseProof.signed -isnot [bool] -or $releaseProof.signed -ne $true -or $releaseProof.readOnly -isnot [bool] -or $releaseProof.readOnly -ne $true -or $releaseProof.version -cne $version -or $releaseProof.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $releaseProof.subject -cne $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -or $releaseProof.artifactSha256 -cne $env:RELAY_EXPECTED_SIGNED_SHA) { throw 'Signed release verification failed.' }
+          $exe = Join-Path $release ('Relay-Setup-' + $version + '-beta-windows-x64.exe')
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne $env:RELAY_EXPECTED_SIGNED_SHA) { throw 'Signed installer changed after the isolated signing job.' }
       - name: Verify five required actual installer and clean lifecycle cases
         id: native_integration
-        if: steps.request.outputs.mode == 'release'
         timeout-minutes: 30
         working-directory: ${{ env.RELAY_BUILD_ROOT }}
         run: |
@@ -213,19 +491,35 @@ jobs:
           if (-not (Test-Path -LiteralPath $env:RELAY_TEST_INSTALLER_PATH -PathType Leaf)) { throw 'The exact built installer is missing; native verification cannot be skipped.' }
           node node_modules/tsx/dist/cli.mjs --test --test-concurrency=1 tests/integration/installer-native.integration.ts
           if ($LASTEXITCODE -ne 0) { throw 'Required installer native integration failed; no release assets will be uploaded.' }
-          node scripts/installer/verify-ci-receipts.mjs $env:RELAY_INSTALLER_CI_RECEIPTS $env:RELAY_TEST_INSTALLER_PATH $version
+          node (Join-Path $env:GITHUB_WORKSPACE 'trusted-workflow-tools/scripts/installer/verify-ci-receipts.mjs') $env:RELAY_INSTALLER_CI_RECEIPTS $env:RELAY_TEST_INSTALLER_PATH $version
           if ($LASTEXITCODE -ne 0) { throw 'Installer receipts did not prove every exact case and confirmed cleanup.' }
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "verified=true`n", [Text.UTF8Encoding]::new($false))
       - name: Retain native integration receipts separately from release assets
-        if: always() && steps.request.outputs.mode == 'release'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer-ci-receipts
           path: ${{ runner.temp }}/relay-installer-ci-receipts/*.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Recheck signature and signed SHA after all five native cases
+        id: signed
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolHead = (git -C trusted-workflow-tools rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $toolHead -cne $env:RELAY_WORKFLOW_SHA) { throw 'Signature utilities differ from the trusted workflow revision.' }
+          if ($env:RELAY_RELEASE_TAG -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Missing signed release tag.' }
+          $version = $Matches[1]
+          if ($env:RELAY_EXPECTED_SIGNED_SHA -cnotmatch '\A[a-f0-9]{64}\z') { throw 'Missing signed release digest.' }
+          $release = Join-Path $env:RUNNER_TEMP 'relay-release'
+          $releaseProof = & ./trusted-workflow-tools/scripts/installer/finalize-signed-release.ps1 -ReleaseDirectory $release -Version $version -SourceCommit $env:RELAY_RELEASE_SHA -ExpectedSubject $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -VerifyOnly | ConvertFrom-Json
+          if ($releaseProof.verified -isnot [bool] -or $releaseProof.verified -ne $true -or $releaseProof.signed -isnot [bool] -or $releaseProof.signed -ne $true -or $releaseProof.readOnly -isnot [bool] -or $releaseProof.readOnly -ne $true -or $releaseProof.version -cne $version -or $releaseProof.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $releaseProof.subject -cne $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -or $releaseProof.artifactSha256 -cne $env:RELAY_EXPECTED_SIGNED_SHA) { throw 'Signed release verification failed.' }
+          $exe = Join-Path $release ('Relay-Setup-' + $version + '-beta-windows-x64.exe')
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne $env:RELAY_EXPECTED_SIGNED_SHA) { throw 'Signed installer changed after the isolated signing job.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ("verified=true`nsha256=" + $hash + "`n"), [Text.UTF8Encoding]::new($false))
       - name: Retain only the checked release assets
-        if: steps.request.outputs.mode == 'release' && steps.native_integration.outputs.verified == 'true'
+        if: steps.native_integration.outputs.verified == 'true' && steps.signed.outputs.verified == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-beta-installer
@@ -239,8 +533,8 @@ jobs:
           compression-level: 0
 
   publish:
-    needs: build
-    if: needs.build.outputs.release_mode == 'release' && needs.build.outputs.native_integration_verified == 'true' && github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [build, sign, verify]
+    if: needs.build.outputs.release_mode == 'release' && needs.sign.outputs.signature_verified == 'true' && needs.verify.outputs.native_integration_verified == 'true' && needs.verify.outputs.signature_verified == 'true' && github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: windows-2025
     timeout-minutes: 15
     permissions:
@@ -249,6 +543,27 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Check out only trusted publication verification utilities
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          path: trusted-workflow-tools
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/installer/verify-authenticode.ps1
+            scripts/installer/finalize-signed-release.ps1
+            scripts/installer/verify-ci-receipts.mjs
+      - name: Set up the pinned verification Node without installing target dependencies
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.5'
+          check-latest: false
+      - name: Download this run's required five-case receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-installer-ci-receipts
+          path: receipts
       - name: Download only this run's checked installer assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -260,11 +575,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELAY_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
           RELAY_RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+          RELAY_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RELAY_EXPECTED_SIGNED_SHA: ${{ needs.sign.outputs.artifact_sha256 }}
+          RELAY_VERIFIED_SIGNED_SHA: ${{ needs.verify.outputs.artifact_sha256 }}
+          RELAY_AZURE_SIGNING_EXPECTED_SUBJECT: ${{ vars.RELAY_AZURE_SIGNING_EXPECTED_SUBJECT }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:RELAY_RELEASE_TAG -cnotmatch '\Av([0-9]+\.[0-9]+\.[0-9]+)-beta\z') { throw 'Invalid release tag.' }
           $version = $Matches[1]
           if ($env:RELAY_RELEASE_SHA -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Missing validated release commit.' }
+          function Assert-ReleaseTag {
           $tagObject = gh api ('repos/' + $env:GH_REPO + '/git/ref/tags/' + $env:RELAY_RELEASE_TAG) | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $tagObject.ref -cne ('refs/tags/' + $env:RELAY_RELEASE_TAG)) { throw 'The requested release tag no longer resolves exactly.' }
           $object = $tagObject.object
@@ -275,7 +595,18 @@ jobs:
             $object = $annotated.object
           }
           if ($object.type -cne 'commit' -or $object.sha -cne $env:RELAY_RELEASE_SHA) { throw 'Release tag changed or does not match the checked build; publication is refused.' }
+          }
+          Assert-ReleaseTag
           $exe = 'Relay-Setup-' + $version + '-beta-windows-x64.exe'
+          $toolHead = (git -C trusted-workflow-tools rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $toolHead -cne $env:RELAY_WORKFLOW_SHA) { throw 'Publication utilities differ from the trusted workflow revision.' }
+          $releaseDirectory = Join-Path $env:GITHUB_WORKSPACE 'release'
+          $releaseProof = & ./trusted-workflow-tools/scripts/installer/finalize-signed-release.ps1 -ReleaseDirectory $releaseDirectory -Version $version -SourceCommit $env:RELAY_RELEASE_SHA -ExpectedSubject $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -VerifyOnly | ConvertFrom-Json
+          if ($releaseProof.verified -isnot [bool] -or $releaseProof.verified -ne $true -or $releaseProof.signed -isnot [bool] -or $releaseProof.signed -ne $true -or $releaseProof.readOnly -isnot [bool] -or $releaseProof.readOnly -ne $true -or $releaseProof.version -cne $version -or $releaseProof.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $releaseProof.subject -cne $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -or $releaseProof.artifactSha256 -cne $env:RELAY_EXPECTED_SIGNED_SHA) { throw 'Publication signature verification failed.' }
+          $signedHash = (Get-FileHash -LiteralPath (Join-Path $releaseDirectory $exe) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($env:RELAY_EXPECTED_SIGNED_SHA -cnotmatch '\A[a-f0-9]{64}\z' -or $signedHash -cne $env:RELAY_EXPECTED_SIGNED_SHA -or $signedHash -cne $env:RELAY_VERIFIED_SIGNED_SHA) { throw 'Publisher received a different signed installer.' }
+          node ./trusted-workflow-tools/scripts/installer/verify-ci-receipts.mjs (Join-Path $env:GITHUB_WORKSPACE 'receipts') (Join-Path $releaseDirectory $exe) $version
+          if ($LASTEXITCODE -ne 0) { throw 'The five final-artifact receipts could not be independently verified.' }
           $payloadNames = @($exe, 'components.json', 'THIRD_PARTY_NOTICES.txt')
           $names = @($payloadNames) + @('SHA256SUMS.txt')
           $files = @(Get-ChildItem release -File)
@@ -296,7 +627,7 @@ jobs:
             '',
             'Setup downloads verified Node and locked official packages automatically. No terminal commands or system Node installation are needed. Sign in with your own subscriptions inside Relay; no signed-in accounts, chats or API keys are included.',
             '',
-            'This Windows beta is unsigned. Code signing and endpoint-security acceptance have not been established. Relay does not bypass Windows or endpoint protections. macOS desktop installation is not included.',
+            'This Windows beta has a verified, timestamped publisher signature. Code signing does not guarantee SmartScreen reputation or endpoint-security acceptance. Relay does not bypass Windows or endpoint protections. macOS desktop installation is not included.',
             '',
             ('Source: https://github.com/' + $env:GH_REPO + '/tree/' + $env:RELAY_RELEASE_TAG)
           ) -join [Environment]::NewLine
@@ -310,5 +641,8 @@ jobs:
           $published = gh api ('repos/' + $env:GH_REPO + '/releases/' + $releaseId) | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $published.tag_name -cne $env:RELAY_RELEASE_TAG -or -not $published.draft -or -not $published.prerelease -or @($published.assets).Count -ne 4 -or @($published.assets | Where-Object { $_.name -notin $names -or $_.state -ne 'uploaded' }).Count) { throw 'Draft release verification failed; it remains unpublished.' }
           foreach ($asset in $published.assets) { $digest = (Get-FileHash -LiteralPath (Join-Path release $asset.name) -Algorithm SHA256).Hash.ToLowerInvariant(); if ($asset.digest -cne ('sha256:' + $digest)) { throw 'Uploaded release bytes do not match the checked local asset; the draft remains unpublished.' } }
+          $releaseProof = & ./trusted-workflow-tools/scripts/installer/finalize-signed-release.ps1 -ReleaseDirectory $releaseDirectory -Version $version -SourceCommit $env:RELAY_RELEASE_SHA -ExpectedSubject $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -VerifyOnly | ConvertFrom-Json
+          if ($releaseProof.verified -isnot [bool] -or $releaseProof.verified -ne $true -or $releaseProof.signed -isnot [bool] -or $releaseProof.signed -ne $true -or $releaseProof.readOnly -isnot [bool] -or $releaseProof.readOnly -ne $true -or $releaseProof.version -cne $version -or $releaseProof.sourceCommit -cne $env:RELAY_RELEASE_SHA -or $releaseProof.subject -cne $env:RELAY_AZURE_SIGNING_EXPECTED_SUBJECT -or $releaseProof.artifactSha256 -cne $env:RELAY_EXPECTED_SIGNED_SHA -or (Get-FileHash -LiteralPath (Join-Path $releaseDirectory $exe) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:RELAY_EXPECTED_SIGNED_SHA) { throw 'Signature or signed bytes changed before publication; leave the draft unpublished.' }
+          Assert-ReleaseTag
           gh release edit $env:RELAY_RELEASE_TAG --draft=false --prerelease --latest=false --repo $env:GH_REPO
           if ($LASTEXITCODE -ne 0) { throw 'Publication outcome needs inspection; do not replay blindly.' }

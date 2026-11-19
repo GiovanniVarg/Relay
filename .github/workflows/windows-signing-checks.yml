@@ -1,0 +1,58 @@
+name: Windows signing verification checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/installer/verify-authenticode.ps1
+      - scripts/installer/finalize-signed-release.ps1
+      - tests/installer-signing.test.ts
+      - .github/workflows/windows-release.yml
+      - .github/workflows/windows-signing-checks.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'GiovanniVarg/Relay' && github.event.repository.private == false
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up the pinned official Node control binary
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.5'
+          check-latest: false
+      - name: Verify the official binary identity before using the control
+        id: control
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = (Get-Command node.exe -CommandType Application).Source
+          $expected = '247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a'
+          if ((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'The official Node control binary does not match the pinned SHA256.' }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, ('path=' + $node + "`n"), [Text.UTF8Encoding]::new($false))
+      - name: Run only built-in signing policy tests
+        run: |
+          node --experimental-strip-types --test tests/installer-signing.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Signing policy regression tests failed.' }
+      - name: Verify the known vendor signature using the actual Windows SDK
+        env:
+          RELAY_NODE_CONTROL_PATH: ${{ steps.control.outputs.path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedHash = '247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a'
+          $expectedSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
+          if ((Get-FileHash -LiteralPath $env:RELAY_NODE_CONTROL_PATH -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedHash) { throw 'The vendor control changed before signature verification.' }
+          $json = & scripts/installer/verify-authenticode.ps1 -LiteralPath $env:RELAY_NODE_CONTROL_PATH -ExpectedSubject $expectedSubject
+          $proof = $json | ConvertFrom-Json
+          if ($proof.verified -isnot [bool] -or $proof.verified -ne $true -or $proof.artifactSha256 -cne $expectedHash -or $proof.subject -cne $expectedSubject -or $proof.timestampRequired -isnot [bool] -or $proof.timestampRequired -ne $true -or $proof.fileDigest -cne 'SHA256') { throw 'Native vendor signature verification did not provide the required exact proof.' }
+          Write-Output 'Official vendor control verified. This is not a signed Relay release or SentinelOne acceptance.'

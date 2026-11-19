@@ -1,9 +1,9 @@
 # Install Relay on Windows
 
-Relay is a beta. The downloadable Windows x64 installer handles its private runtime and components automatically; you do not need a terminal, a system Node installation or a global CLI installation.
+People installing Relay only download and open Setup; no Azure account, certificate installation or developer setup is required. Relay is a beta. The Windows x64 installer handles its private runtime and components automatically; you do not need a terminal, a system Node installation or a global CLI installation.
 
 1. Download **Relay Setup** from the [latest beta release](https://github.com/GiovanniVarg/Relay/releases).
-2. Open the executable and choose **Install Relay**. The first install needs internet, at least 5 GB of free space and a few minutes. Windows may show its normal unsigned-publisher security prompt; Relay does not install a certificate or disable Windows security.
+2. Open the executable and choose **Install Relay**. The first install needs internet, at least 5 GB of free space and a few minutes. Windows reputation or organization policies can still show warnings; Relay does not install a certificate or disable Windows security.
 3. Choose **Open Relay**, then connect your accounts through their official sign-in. Installation never signs you in, reads account credentials, sends model requests or approves model usage.
 
 Setup puts application files in your Windows home folder's `Relay` directory and saved data in the separate `.relay-data` directory. Node, npm, Codex and Claude live privately beneath `Relay/.runtime`; they do not replace system programs or modify global PATH. Cursor's SDK and other app components are obtained through the locked official npm packages. The bot browser comes from Playwright's pinned browser download. Team execution uses the verified Herdr runtime.
@@ -28,6 +28,8 @@ The Windows .NET Framework compiler builds the native GUI. Output includes the b
 
 Installer process and Windows executable integration checks run only in disposable GitHub release CI, after building the actual installer. Ordinary local tests and Relay source checks do not compile an extra test executable or start those synthetic process fixtures. The required CI gate checks the actual installer's identity, output bounds, independent launcher lifetime, owned timeout cleanup and a real isolated install/open/reopen/uninstall lifecycle that preserves its data. Synthetic children expire automatically; the installed fixture uses supported uninstall and verifies shutdown. Release publication requires all five matching receipts with confirmed cleanup. Host security refusals or unknown cleanup fail the gate and retain evidence. These checks do not disable security software, restore quarantined files or establish that a security alert is a false positive.
 
-The beta installer remains unsigned. Authenticode signing and endpoint-security acceptance have not been established; the existing installer and daily launcher still use their documented PowerShell components.
+The previously published 0.11.1 beta remains unsigned. Future releases through the prepared signing pipeline require a verified publisher signature before the five final-installer checks and publication; positive signing verification is still pending the publisher's one-time Azure identity/setup and an approved CI run. This is publisher administration, not something downloaders configure. Signing does not establish endpoint-security acceptance. See [publisher-only Windows signing](windows-signing.md).
+
+A local build produces an unsigned development artifact; it cannot bypass the signed release gate. Fresh signed installs preserve the final signature in the daily launcher. Existing installations keep their current `.runtime` launcher because normal updates preserve private runtimes; this preparation does not migrate an older unsigned launcher.
 
 Automated installation verification supports separate `--destination`, `--data`, `--port`, `--no-integrations` and `--browser-cache` arguments. These isolate test installations from normal Relay, Desktop/Start Menu/Startup and registry settings. This is test infrastructure rather than the normal user setup flow.
